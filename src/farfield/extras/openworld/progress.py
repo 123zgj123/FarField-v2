@@ -1,4 +1,19 @@
-"""Research progress, stagnation, and trajectory-level multistart."""
+"""Research progress, stagnation, and trajectory-level multistart.
+
+Four different things used to be called "progress":
+
+``activity``               an action ran and did not crash
+``operational progress``   an artifact or a state row appeared
+``epistemic progress``     the project learned something about the world
+``research progress``      the *central* question moved, or the project's
+                           quality gap shrank, or a real objection was retired
+
+Only the first two were measured. That is why an agent could solve ten
+peripheral questions, add ten artifacts, even admit new WORLD evidence, and
+never trip a stagnation check — every tick "made progress" while the research
+project stood exactly still. The distinction below is the difference between an
+agent that is busy and an agent that is getting somewhere.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .actions import FORK_LINEAGE, ActionInstance
+from .contract import alignment_of_question, contract_from_state
+from .quality import STATUS_RANK, open_reviews
 from .state import ScientificState
 
 
@@ -18,6 +35,11 @@ LANES = (
 )
 
 STAGNATION_IDLE = 4
+
+# A research project may be busy for a long time before anyone notices it is not
+# advancing. This is deliberately longer than the operational idle window: it
+# fires on *strategic* failure, which needs a few ticks of evidence.
+STRATEGIC_STAGNATION_IDLE = 6
 
 
 @dataclass
@@ -33,6 +55,67 @@ class ResearchProgress:
     unused_capability: int = 0
     equivalent_theory: int = 0
     duplicate_evidence: int = 0
+    # Research-level gains. These ask whether the *project* moved, not whether
+    # the runtime did something.
+    central_question_progress: int = 0
+    decision_relevant_evidence: int = 0
+    quality_gap_reduction: int = 0
+    critical_review_resolution: int = 0
+    hypothesis_discrimination: int = 0
+    replication_progress: int = 0
+    evaluation_strength_progress: int = 0
+    mechanism_progress: int = 0
+    successful_reorientation: int = 0
+    # Advancing a dimension without yet clearing the contract bar is still
+    # progress. So is discovering a flaw, and so is learning that a design does
+    # not work — those are what the next idea is built from.
+    quality_dimension_progress: int = 0
+    objection_discovery: int = 0
+    failure_information: int = 0
+    # Research-level costs. Activity that looks like work and is not.
+    low_value_activity: int = 0
+    duplicate_progress: int = 0
+    peripheral_question_progress: int = 0
+    caveat_only_repair: int = 0
+    same_failure_repetition: int = 0
+    quality_stagnation: int = 0
+
+    @property
+    def research_gain(self) -> int:
+        return (
+            self.central_question_progress
+            + self.decision_relevant_evidence
+            + self.quality_gap_reduction
+            + self.critical_review_resolution
+            + self.hypothesis_discrimination
+            + self.replication_progress
+            + self.evaluation_strength_progress
+            + self.mechanism_progress
+            + self.successful_reorientation
+            + self.quality_dimension_progress
+            + self.objection_discovery
+            + self.failure_information
+        )
+
+    @property
+    def research_cost(self) -> int:
+        return (
+            self.low_value_activity
+            + self.duplicate_progress
+            + self.peripheral_question_progress
+            + self.caveat_only_repair
+            + self.same_failure_repetition
+            + self.quality_stagnation
+        )
+
+    @property
+    def research_meaningful(self) -> bool:
+        """Did the research project advance, as opposed to the runtime?
+
+        Peripheral questions, duplicate evidence and prose repairs do not clear
+        this bar no matter how many of them a tick produced.
+        """
+        return self.research_gain > self.research_cost
 
     @property
     def new_evidence(self) -> int:
@@ -73,6 +156,27 @@ class ResearchProgress:
             "equivalent_theory": self.equivalent_theory,
             "duplicate_evidence": self.duplicate_evidence,
             "meaningful": self.meaningful,
+            "central_question_progress": self.central_question_progress,
+            "decision_relevant_evidence": self.decision_relevant_evidence,
+            "quality_gap_reduction": self.quality_gap_reduction,
+            "critical_review_resolution": self.critical_review_resolution,
+            "hypothesis_discrimination": self.hypothesis_discrimination,
+            "replication_progress": self.replication_progress,
+            "evaluation_strength_progress": self.evaluation_strength_progress,
+            "mechanism_progress": self.mechanism_progress,
+            "successful_reorientation": self.successful_reorientation,
+            "quality_dimension_progress": self.quality_dimension_progress,
+            "objection_discovery": self.objection_discovery,
+            "failure_information": self.failure_information,
+            "low_value_activity": self.low_value_activity,
+            "duplicate_progress": self.duplicate_progress,
+            "peripheral_question_progress": self.peripheral_question_progress,
+            "caveat_only_repair": self.caveat_only_repair,
+            "same_failure_repetition": self.same_failure_repetition,
+            "quality_stagnation": self.quality_stagnation,
+            "research_gain": self.research_gain,
+            "research_cost": self.research_cost,
+            "research_meaningful": self.research_meaningful,
         }
 
 
@@ -91,6 +195,152 @@ def _world_evidence(state: ScientificState) -> list[dict[str, Any]]:
         for row in state.evidence_records
         if str(row.get("epistemic") or "") == "WORLD" and row.get("evidence_id")
     ]
+
+
+def _quality_gap_size(state: ScientificState) -> int:
+    quality = state.quality or {}
+    if "quality_gap_size" in quality:
+        return int(quality.get("quality_gap_size") or 0)
+    from .quality import compute_quality
+    return int(compute_quality(state).get("quality_gap_size") or 0)
+
+
+def _dimension_rank(state: ScientificState, name: str) -> int:
+    quality = state.quality or {}
+    row = (quality.get("dimensions") or {}).get(name) or {}
+    return STATUS_RANK.get(str(row.get("status") or "unknown"), 0)
+
+
+def _central_ids(state: ScientificState) -> set[str]:
+    """Questions that still serve the contract's root question."""
+    contract = contract_from_state(state)
+    if not contract.is_set:
+        return {str(row.get("id") or "") for row in
+                state.open_questions + state.resolved_questions + state.partial_questions}
+    known = (state.open_questions + state.resolved_questions
+             + state.partial_questions + state.blocked_questions)
+    return {
+        str(row.get("id") or "")
+        for row in known
+        if alignment_of_question(contract, row, known=known).status in {"aligned", "instrumental"}
+    }
+
+
+def _open_severity(state: ScientificState, severity: str) -> int:
+    return len(open_reviews(state.reviews, severity=severity))
+
+
+def _failure_signature(row: Mapping[str, Any]) -> str:
+    return "|".join(str(row.get(key) or "") for key in
+                    ("action_type", "theory_id", "reason"))
+
+
+def measure_research_progress(
+    before: ScientificState,
+    after: ScientificState,
+    basic: "ResearchProgress",
+) -> "ResearchProgress":
+    """Fill the research-level dimensions of an already-measured tick.
+
+    Everything here is a difference between two canonical states. A worker
+    cannot report that it made research progress; it can only leave behind a
+    state in which the central question is better supported than before.
+    """
+    central_after = _central_ids(after)
+    central_before = _central_ids(before)
+    before_eids = {str(row.get("evidence_id") or "") for row in before.evidence_records}
+    new_rows = [row for row in after.evidence_records
+                if str(row.get("evidence_id") or "") not in before_eids]
+    admitted = [row for row in new_rows
+                if str(row.get("epistemic") or "") == "WORLD" and row.get("attested")
+                and row.get("promotion_ok")]
+
+    central_theories = {
+        str(row.get("id") or "") for row in after.theories
+        if row.get("role") != "competing_explanation"
+        and (not central_after or str(row.get("question_id") or "") in central_after)
+    }
+    decision_relevant = [
+        row for row in admitted
+        if str(row.get("theory_id") or "") in central_theories
+        or str(row.get("question_id") or "") in central_after
+    ]
+    peripheral = [row for row in admitted if row not in decision_relevant]
+
+    resolved_central = [
+        str(row.get("id") or "") for row in after.resolved_questions
+        if str(row.get("id") or "") in central_after
+        and not any(str(item.get("id") or "") == str(row.get("id") or "")
+                    for item in before.resolved_questions)
+    ]
+    resolved_peripheral = max(
+        0,
+        (len(after.resolved_questions) - len(before.resolved_questions)) - len(resolved_central),
+    )
+
+    gap_before, gap_after = _quality_gap_size(before), _quality_gap_size(after)
+    fatal_closed = max(0, _open_severity(before, "fatal") - _open_severity(after, "fatal"))
+    major_closed = max(0, _open_severity(before, "major") - _open_severity(after, "major"))
+
+    refused_before = int((before.metrics or {}).get("caveat_only_repair_refused") or 0)
+    refused_after = int((after.metrics or {}).get("caveat_only_repair_refused") or 0)
+
+    before_failures = [_failure_signature(row) for row in before.failed_designs]
+    new_failures = [_failure_signature(row) for row in after.failed_designs[len(before.failed_designs):]]
+    repeated = sum(1 for sig in new_failures if sig in before_failures)
+
+    reoriented = (
+        max(0, len(after.design_revisions) - len(before.design_revisions))
+        + max(0, int(after.project_epoch) - int(before.project_epoch))
+    )
+
+    basic.central_question_progress = len(resolved_central) + len(decision_relevant)
+    basic.decision_relevant_evidence = len(decision_relevant)
+    basic.quality_gap_reduction = max(0, gap_before - gap_after)
+    basic.critical_review_resolution = fatal_closed * 2 + major_closed
+    basic.hypothesis_discrimination = basic.theory_discrimination
+    basic.replication_progress = sum(1 for row in admitted if row.get("replication_of")
+                                     and row.get("transfer_ok"))
+    basic.evaluation_strength_progress = max(
+        0,
+        (_dimension_rank(after, "baseline_strength") - _dimension_rank(before, "baseline_strength"))
+        + (_dimension_rank(after, "measurement_validity") - _dimension_rank(before, "measurement_validity")),
+    )
+    basic.mechanism_progress = max(
+        0, _dimension_rank(after, "mechanism_support") - _dimension_rank(before, "mechanism_support"))
+    basic.successful_reorientation = reoriented
+
+    # An ordinal step on any dimension is real work even when it does not yet
+    # clear the contract's bar: missing -> weak -> partial -> adequate is three
+    # pieces of progress, and only crediting the last one made the first two
+    # look like idling.
+    basic.quality_dimension_progress = sum(
+        max(0, _dimension_rank(after, name) - _dimension_rank(before, name))
+        for name in ((after.quality or {}).get("dimensions") or {})
+    )
+    # Finding the flaw early is the capability under test. Structural review is
+    # deduplicated and grounded in recorded state, so this cannot be farmed by
+    # reviewing repeatedly.
+    known_reviews = {str(row.get("review_id") or "") for row in before.reviews}
+    basic.objection_discovery = sum(
+        1 for row in after.reviews
+        if str(row.get("review_id") or "") not in known_reviews
+        and str(row.get("severity") or "") in {"fatal", "major"}
+    )
+    # Learning that a design or capability does not work is information the next
+    # idea is built from. Learning it a second time is not, and
+    # ``same_failure_repetition`` charges for that separately.
+    basic.failure_information = max(0, len(new_failures) - repeated)
+
+    basic.peripheral_question_progress = resolved_peripheral + len(peripheral)
+    basic.caveat_only_repair = max(0, refused_after - refused_before)
+    basic.same_failure_repetition = repeated
+    basic.duplicate_progress = basic.duplicate_evidence
+    basic.quality_stagnation = 1 if gap_after > gap_before else 0
+    # An action that produced no admitted evidence, resolved no objection, moved
+    # no quality dimension and opened no revision was activity, not research.
+    basic.low_value_activity = 0 if (basic.research_gain or basic.meaningful) else 1
+    return basic
 
 
 def measure_progress(before: ScientificState, after: ScientificState) -> ResearchProgress:
@@ -115,7 +365,7 @@ def measure_progress(before: ScientificState, after: ScientificState) -> Researc
         if name not in before.available_capabilities
         and not any(str(row.get("capability") or "") == name for row in after.evidence_records)
     ]
-    return ResearchProgress(
+    basic = ResearchProgress(
         question_resolution=max(0, len(after.resolved_questions) - len(before.resolved_questions)),
         validated_new_evidence=len(validated),
         capability_unlock=max(0, len(after.available_capabilities) - len(before.available_capabilities)),
@@ -140,6 +390,7 @@ def measure_progress(before: ScientificState, after: ScientificState) -> Researc
         ),
         duplicate_evidence=duplicate,
     )
+    return measure_research_progress(before, after, basic)
 
 
 @dataclass
@@ -159,10 +410,76 @@ class StagnationEvent:
 
 
 def maybe_stagnation(state: ScientificState, *, idle: int = STAGNATION_IDLE) -> StagnationEvent | None:
+    """Operational idleness: nothing at all is happening."""
     gap = int(state.ticks) - int(state.last_progress_tick)
     if gap >= idle and state.ticks > 0:
         return StagnationEvent(idle_ticks=gap)
     return None
+
+
+@dataclass
+class StrategicStagnation:
+    """The project is busy and going nowhere.
+
+    Every tick may succeed. Every tick may add an artifact. Some ticks may even
+    admit new WORLD evidence. If the central question is no better supported,
+    the major objections are not fewer and the quality gap has not shrunk, the
+    research is stagnant and the answer is not another experiment of the same
+    shape — it is REDESIGN, FORK, or PROJECT_PIVOT.
+    """
+
+    idle_ticks: int
+    reasons: tuple[str, ...] = ()
+    severity: str = "strategic"
+    quality_gap: int = 0
+    open_fatal: int = 0
+    open_major: int = 0
+    escalate: tuple[str, ...] = ("REDESIGN", "FORK_LINEAGE", "PROJECT_PIVOT")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "idle_ticks": self.idle_ticks,
+            "reasons": list(self.reasons),
+            "severity": self.severity,
+            "quality_gap": self.quality_gap,
+            "open_fatal": self.open_fatal,
+            "open_major": self.open_major,
+            "escalate": list(self.escalate),
+            "basis": "no_research_level_progress_despite_operational_activity",
+        }
+
+
+def maybe_strategic_stagnation(
+    state: ScientificState, *, idle: int = STRATEGIC_STAGNATION_IDLE
+) -> StrategicStagnation | None:
+    if int(state.ticks) <= 0:
+        return None
+    gap = int(state.ticks) - int(state.last_research_progress_tick)
+    if gap < idle:
+        return None
+    reasons: list[str] = []
+    quality_gap = _quality_gap_size(state)
+    fatal, major = _open_severity(state, "fatal"), _open_severity(state, "major")
+    if quality_gap:
+        reasons.append(f"quality_gap_unchanged_for_{gap}_ticks:{quality_gap}_dimensions_short")
+    if fatal:
+        reasons.append(f"unresolved_fatal_objections:{fatal}")
+    if major:
+        reasons.append(f"unresolved_major_objections:{major}")
+    if not state.verified_research_state:
+        reasons.append("no_verified_central_claim")
+    if int((state.metrics or {}).get("caveat_only_repair_refused") or 0):
+        reasons.append("repairs_attempted_with_prose_instead_of_evidence")
+    if int((state.debt or {}).get("goal_drift_debt") or 0):
+        reasons.append("open_questions_have_drifted_from_the_root_question")
+    if not reasons:
+        # Nothing left to complain about and no research progress either: this
+        # is exhaustion, not stagnation. Termination handles it.
+        return None
+    return StrategicStagnation(
+        idle_ticks=gap, reasons=tuple(reasons), quality_gap=quality_gap,
+        open_fatal=fatal, open_major=major,
+    )
 
 
 @dataclass

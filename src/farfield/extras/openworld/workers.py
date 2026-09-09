@@ -36,6 +36,45 @@ def _json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _project_brief(kwargs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The controller's compact project brief, as worker context.
+
+    ``project_for`` used to compute this on every action and hand it to workers
+    that never read it, so a long run's prompts were built from accumulated
+    narrative while the relevant slice was discarded. The brief is a derived
+    projection: it constrains what the worker is asked to do, and it is not a
+    source of scientific facts.
+    """
+    projection = kwargs.get("projection")
+    if not isinstance(projection, Mapping):
+        return ()
+    journal = projection.get("research_journal")
+    if not isinstance(journal, Mapping):
+        return ()
+    brief = {
+        "research_contract": journal.get("research_contract"),
+        "current_strategy": journal.get("strategy"),
+        "next_decisive_action": journal.get("next_decisive_action"),
+        "open_objections_you_must_not_answer_with_wording": journal.get("open_objections"),
+        "relevant_world_evidence": journal.get("relevant_world_evidence"),
+        "remaining_resources": journal.get("resources"),
+        "epistemic_reminders": journal.get("epistemic_reminders"),
+    }
+    if projection.get("clean_restart"):
+        restart = dict(projection["clean_restart"])
+        brief["clean_restart"] = {
+            "reason": restart.get("reason"),
+            "root_question": restart.get("root_question"),
+            "failure_lessons": restart.get("failure_lessons"),
+            "dropped": restart.get("dropped"),
+            "note": restart.get("note"),
+        }
+    if projection.get("contingency_plan"):
+        brief["outcome_contingencies"] = projection["contingency_plan"]
+    return (json.dumps({"project_brief_derived_from_scientific_state": brief},
+                       ensure_ascii=False),)
+
+
 def _card(raw: Any) -> GeneratedCard:
     if isinstance(raw, GeneratedCard):
         return raw
@@ -129,13 +168,24 @@ class LegacyResearchWorkers:
         question = next((row for row in state.get("open_questions", [])
                          if row.get("id") == action.target), {})
         try:
-            harvest = harvest_survey(self.feed if self.feed is not None else CompositeFeed(),
+            feed = self.feed if self.feed is not None else CompositeFeed()
+            harvest = harvest_survey(feed,
                                      topic, str(question.get("text") or topic), topic=topic,
                                      claim=str(action.extra.get("claim") or ""),
                                      fetcher=kwargs.get("fetcher"))
             if not harvest.works:
                 return self._failure(action, "no_verified_literature", citations=[], harvest=harvest.to_dict())
             works = list(harvest.works)
+            documents, document_gaps = {}, []
+            reader = getattr(feed, "read_work", None)
+            if callable(reader):
+                from ..livefeed import FeedBlocked
+                for work in works[:6]:
+                    document = reader(work)
+                    if isinstance(document, FeedBlocked):
+                        document_gaps.append(document.to_dict())
+                    elif isinstance(document, dict) and document.get("arxiv_id") == work.arxiv_id:
+                        documents[work.cite_id()] = document
             prior = strongest_prior(str(action.extra.get("claim") or question.get("text") or topic), works)
             spans = [{"cite_id": work.cite_id(), "field": "abstract", "start": 0,
                       "end": len(work.abstract), "text": work.abstract, "url": work.href()}
@@ -147,16 +197,17 @@ class LegacyResearchWorkers:
                         "question_id": action.target, "citations": [work.cite_id() for work in works],
                         "read_first": [work.cite_id() for work in works], "spans": spans,
                         "prior": prior.to_dict() if prior else None, "path": str(path),
+                        "source_documents": documents, "document_gaps": document_gaps,
                         **harvest.to_dict()}
             if action.extra.get("extract_trajectories"):
                 from ..explore import extract_paper_state, extract_transition
                 papers, transitions, gaps = [], [], []
                 for work in works[:6]:
                     try:
-                        papers.append(extract_paper_state(work, client=self.client))
+                        papers.append(extract_paper_state(documents.get(work.cite_id(), work), client=self.client))
                     except (LLMUnavailable, ValueError, KeyError, TypeError) as exc:
                         gaps.append({"cite_id": work.cite_id(), "reason": str(exc)})
-                        papers.append(extract_paper_state(work))
+                        papers.append(extract_paper_state(documents.get(work.cite_id(), work)))
                 for source in papers:
                     for target in papers:
                         from ..explore import _research_citation
@@ -194,6 +245,7 @@ class LegacyResearchWorkers:
         question = next((row for row in state.get("open_questions", []) if row.get("id") == action.target), {})
         knowledge = tuple(str(row.get("text") or row.get("reason") or "")
                           for row in state.get("failed_designs", []))
+        knowledge += _project_brief(kwargs)
         context = tuple(f"{work.cite_id()}: {work.title}. {work.abstract}" for work in works)
         common = dict(seed_label=topic, near_labels=(topic,), topic=topic, context=context,
                       knowledge=knowledge, program=(str(question.get("text") or action.target),))
@@ -248,7 +300,8 @@ class LegacyResearchWorkers:
         failures = [r for r in state.get("failed_designs", []) if r.get("theory_id") == parent_id]
         if hop > 1 and not (evidence or failures):
             return self._failure(action, "next_hop_requires_actual_parent_evidence_or_explicit_failure")
-        surveys = [r for r in state.get("artifacts", []) if r.get("kind") == "literature_survey"]
+        surveys = [r for r in state.get("artifacts", []) if r.get("kind") == "literature_survey"
+                   and r.get("question_id") in {"", action.target}]
         transitions = [t for r in surveys for t in r.get("research_transitions", [])]
         anchor = dict(next((r["research_state"] for r in reversed(surveys) if r.get("research_state")), {}))
         anchor.update(problem=state.get("goal"), actual_evidence=evidence,
@@ -299,13 +352,25 @@ class LegacyResearchWorkers:
             "must be unique and must not be 'self'. hypotheses_compared must contain 'self' and the exact "
             "competitor IDs; expected_outcomes keys must exactly equal hypotheses_compared. Never replace "
             "an ID with a descriptive name or leave the example 'alternative' after renaming its competitor. "
-            "Directions must be increase/decrease/unchanged. Priority factors are proposal estimates, not evidence.")
+            "Directions must be increase/decrease/unchanged. Priority factors are proposal estimates, not evidence. "
+            "For research depth, include research_obligations in research_metadata: separately document "
+            "novelty (closest-prior overlap and the exact unestablished delta), importance (who benefits and "
+            "which real observations would establish prevalence), feasibility (available inputs versus missing "
+            "execution capabilities), and value (strong baselines, equal-cost comparison, transfer conditions "
+            "and a kill criterion). These are GENERATED obligations, not ratings or conclusions. "
+            "Also include study_design: primary estimand, randomized arms or justified observational scope, "
+            "negative control, leakage-safe split, uncertainty analysis, and the smallest informative pilot. "
+            "Do not claim novelty from distance or claim effectiveness from your own assessment. "
+            "A narrow executable diagnostic must not replace the original research question.")
         transform = [{"source_state": t.source_state.to_dict(), "operator": t.operator,
                       "changed_component": t.changed_component, "applicability_conditions": t.applicability_conditions,
                       "known_failure_conditions": t.known_failure_conditions} for t in chosen]
-        knowledge = (json.dumps({"anchor": anchor, "parent_hypothesis": parent,
+        knowledge = _project_brief(kwargs) + (json.dumps({"anchor": anchor, "parent_hypothesis": parent,
             "actual_parent_evidence": evidence, "execution_failures_not_evidence": failures,
-            "transferable_operators": transform}, ensure_ascii=False),)
+            "transferable_operators": transform,
+            "literature_read_spans_not_experimental_evidence": {
+                key: doc.get("full_text_spans", []) for survey in surveys
+                for key, doc in survey.get("source_documents", {}).items()}}, ensure_ascii=False),)
         topic = str(state.get("goal") or "")
         common = dict(seed_label=topic, near_labels=(topic,), topic=topic,
                       context=tuple(f"{w.cite_id()}: {w.title}. {w.abstract}" for w in works),
@@ -609,6 +674,12 @@ class LegacyResearchWorkers:
             gate.update(ablation_required=True, mechanism_identified=False, cannot_corroborate=True)
             gate["missing_capability"] = "registered_competing_mechanism_ablation"
         try:
+            world_payload = world.root / "world.json"
+            if world_payload.is_file():
+                scope = json.loads(world_payload.read_text()).get("research_scope")
+                if scope == "observational_trace_analysis_only":
+                    gate["scope_ceiling"] = scope
+                    gate["validation_gaps"].append("observational_archive_not_live_harness_execution")
             if oracle_field(world.schema) and oracle_dependent(card.claim, diagnosis.experiment,
                                                               diagnosis.treatment_arm, diagnosis.control_arm):
                 fixture = materialize_oracle_placebo(world, folder / "checks" / "oracle")

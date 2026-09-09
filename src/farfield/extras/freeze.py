@@ -652,6 +652,13 @@ def _slice_payload(
             "labels": labels,
             "slice": {**dict(rule), "parent_n": len(traces)},
         }
+        if source_format == "json_or_jsonl" and text.lstrip().startswith("{"):
+            supplied = json.loads(text)
+            if supplied.get("scope") == "observational_trace_analysis_only":
+                # A source restriction can lower, never raise, the evidence ceiling.
+                world.update(research_scope=supplied["scope"],
+                             source_manifest_sha256=supplied.get("manifest_sha256", ""),
+                             source_files=supplied.get("source_files", []))
         origin = {
             **origin_base,
             "parent": {

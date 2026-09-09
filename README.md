@@ -30,18 +30,23 @@ The aim is to explore transformations of scientific reasoning—not to treat dis
 - **Test before promoting.** Registered two-arm probes, exact world binding, reproduction, and applicable heldout checks constrain conclusions.
 - **Keep failure informative.** Execution failures, policy refusals, scientific negatives, and inconclusive results remain distinct.
 - **Evaluate policy changes separately.** A research-policy candidate cannot be installed without trusted heldout evaluation.
+- **Manage the project, not only the actions.** A research contract keeps the root question across a long run, an ordinal quality state records how good the project actually is, structured objections open repair debt that prose cannot close, and a direction that cannot be repaired can be retired without losing what it established.
 
 FarField is useful for researchers building and auditing automated-research workflows with explicit literature sources and executable, frozen experimental worlds. It is not a one-command route from an arbitrary topic to a verified paper.
 
 ## One scientific control loop
 
 ```text
+ResearchContract
+       ↓
 ScientificState → Frontier → Scheduler → Action → Existing Research Worker
        ↑                                                   ↓
        └── Scientific Event ← Trusted Kernel ← CandidateResult
 ```
 
 This is a state-dependent loop, not a fixed sequence of stages. CLI and console both use `run_research`. Workers do not start independent research missions.
+
+The contract, the quality state, the review debt and the resource state are derived projections recomputed from admitted events, so a resumed run agrees with a live one. A worker cannot write any of them: it produces evidence or an objection, and the projection follows.
 
 | Action | Existing capabilities used |
 |---|---|
@@ -50,6 +55,11 @@ This is a state-dependent loop, not a fixed sequence of stages. CLI and console 
 | PROBE | Diagnosis, registered probe construction, actual execution |
 | VERIFY | Exact object and artifact checks, reproduction, explicit heldout worlds |
 | SYNTHESIZE | Research briefs, packets, fact sheets, paper planning and drafting |
+| REVIEW | Structured objections over canonical state; a planning signal, never evidence |
+| REDESIGN | Explicit design revisions with a named root cause and an early-kill condition |
+| PROJECT_PIVOT | Retire a direction, keep its WORLD evidence and the contract, drop its narrative |
+
+Termination distinguishes seven outcomes. A finished loop, an empty frontier, a generated paper and an exhausted budget are each reported as themselves, and none of them means the research is ready.
 
 The Trusted Kernel, event sourcing, provenance, and WORLD/GENERATED separation remain the authority boundary. Models propose claims and scripts; they cannot declare their own outputs to be scientific evidence.
 
@@ -162,7 +172,7 @@ research_workers/<evidence-id>/candidates/<card-id>/
   paper/               optional draft artifacts
 ```
 
-Artifacts appear only when the corresponding action produces them. A blocked run may have no measurements. `research_complete: false` describes an open study, not a successfully completed paper. Runtime folders and credentials are excluded from the public repository.
+Artifacts appear only when the corresponding action produces them. A blocked run may have no measurements. A run reports one of seven termination outcomes and a `research_complete` verdict; that verdict is a conjunction of gates over admitted evidence, standing objections, the contract and the claim's scope, not a report that the loop finished. Runtime folders and credentials are excluded from the public repository.
 
 To rerun an existing registered protocol:
 
@@ -176,7 +186,8 @@ This exact-instance reproduction does not establish transfer to a new world.
 
 The [validation record](VALIDATION.md) maps the requested behaviors to tests and separates offline regressions from live observations.
 
-- **Offline:** 1,202 main-suite tests, including 6 skips; 30 contract tests and 2 historical regressions pass.
+- **Offline:** 1,311 tests, including 6 skips — main suite, 30 contract tests, historical regressions, eight capability-level behavioural scenarios, and long-horizon trajectory guarantees.
+- **Project-management layer:** offline validated only. No live model or live world run has exercised the contract, quality, review, redesign, pivot or termination paths.
 - **Live integration:** bounded Iris sessions retrieved real papers, generated structured hypotheses, and reached diagnosis/probe construction. The final recorded segment blocked a metric mismatch before execution and produced a failure-reframe branch—not WORLD probe evidence or a verified discovery.
 - **Trajectory coverage:** extraction and structural retrieval exist, but a broad grounded transition corpus and learned operator-selection distribution do not.
 - **Experimental coverage:** catalog and acquisition support are limited. Registered identities do not fully prove that arbitrary generated code implements its prose claim.

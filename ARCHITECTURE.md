@@ -11,10 +11,28 @@ infrastructure, not evidence that the system has learned to make discoveries.
 There is one product-level scientific controller:
 
 ```text
+ResearchContract
+       ↓
 ScientificState → Frontier → Scheduler → Action → Existing Research Worker
        ↑                                                   ↓
        └── Scientific Event ← Trusted Kernel ← CandidateResult
 ```
+
+`ScientificState` answers *what do we know*. A long project also has to answer
+*what is this project for*, *how good is it*, *what is standing against it*,
+and *what is left to spend* — questions a `goal: str` cannot survive fifty
+actions. Four derived, event-sourced projections carry them:
+
+| Projection | Module | Answers |
+|---|---|---|
+| `ResearchContract` | `contract.py` | the root question, scope, quality target, authorised reframes, limits |
+| `ResearchQualityState` | `quality.py` | twelve ordinal dimensions and which are short of the contract |
+| Review debt | `quality.py` | recorded objections, their severity, and what repair each demands |
+| `ResourceState` | `resources.py` | measured spend against declared limits |
+
+All four are recomputed from admitted events on every reduction, so a resumed
+or rebuilt state agrees with a live one. None of them can be written by a
+worker: a worker produces evidence or an objection, and the projection follows.
 
 [runtime.py](src/farfield/extras/openworld/runtime.py) connects the CLI and console
 to OpenWorld. [workers.py](src/farfield/extras/openworld/workers.py) adapts existing
@@ -34,6 +52,80 @@ observations or authorize their own verifier changes.
 | PROBE | diagnose, probeexp, hostexp | A generated plan is not an executed result |
 | VERIFY | identity checks, registered execution, reproduction, heldout fixtures | Verification is scoped to actual evidence and objects |
 | SYNTHESIZE | brief, packet, paperplan, writeup | Text cannot increase claim strength without the evidence contract |
+| REVIEW | structural objections over canonical state | Reviewer judgment is a planning signal, never evidence |
+| REDESIGN | diagnosis over reviews, failures and quality gaps | A revision is a plan, not a result |
+| PROJECT_PIVOT | lineage retirement and clean restart | WORLD evidence and the contract survive; speculation does not |
+
+## Project-level decisions
+
+Producing hypotheses, running experiments and verifying evidence is not the
+same as managing a research project. Three further actions cover the decisions
+a long horizon actually forces.
+
+**REVIEW** records structured objections: severity, dimension, affected claim
+and design, the repair type demanded, and whether new evidence is required. The
+default reviewer is deterministic and raises only what the state already proves
+— an unreported sample size, a measure blind to its oracle placebo, a control
+arm that measured nothing, a single-world result. A model reviewer may add
+judgment on top; it cannot remove these, and it cannot raise belief. Ten
+reviewers agreeing is still zero measurements.
+
+Novelty and importance are the exception no execution can settle. A recorded
+judgment moves them, capped at `partial` unless it cites literature this state
+verified. An open objection on the same dimension outranks any assessment.
+
+**Caveat-only repair is refused deterministically.** When an objection requires
+new evidence, a rewrite, a narrowed claim, another caveat or a new discussion
+section cannot close it. The reducer refuses the resolution, keeps the objection
+open, and counts the refusal. Only new admitted WORLD evidence, a replication,
+a repaired measurement, a repaired design or a stronger baseline resolves it.
+
+**REDESIGN** produces a `DesignRevision`, not another hypothesis: the trigger,
+the failure root cause, the invalidated assumption, the repairs considered and
+rejected, what is preserved, what changes, and the condition under which the
+revision is itself abandoned early. Repair attempts have diminishing returns —
+two spent revisions on a dimension that has not moved make a pivot worth more
+than a third revision.
+
+**PROJECT_PIVOT** retires a direction. Admitted WORLD evidence, the contract,
+live contradictions and compact failure lessons carry forward; the speculative
+chain that produced the dead direction does not, because handing the model the
+transcript that produced it is how a pivot buys nothing. A direction cannot be
+abandoned before it has been tried, and a fresh epoch must do real work before
+it may be abandoned in turn.
+
+## Progress, stagnation and termination
+
+Four things used to be called progress: activity, operational progress,
+epistemic progress, and research progress. Only the first two were measured, so
+an agent could resolve ten peripheral questions, add ten artifacts and never
+trip a stagnation check while the project stood still.
+
+Operational idleness and research stagnation now run on separate clocks.
+`strategic_stagnation` fires while every tick is still succeeding, when the
+central question is no better supported, the major objections are no fewer and
+the quality gap has not shrunk — and it raises the priority of REDESIGN, FORK
+and PROJECT_PIVOT rather than more of the same.
+
+An action that provably cannot inform anything is refused before it is offered.
+The retry key is derived from each action's declared `ActionSpec.reads`, so a
+blocked observation retries when the world changes and not when an unrelated
+hypothesis appears; and an action that has twice returned the same outcome
+while admitting nothing has established that fact.
+
+Termination distinguishes seven outcomes. None of a finished loop, an empty
+frontier, a generated paper, or an exhausted budget means the research is ready:
+
+```text
+RUN_SEGMENT_DONE  RESEARCH_READY  RESEARCH_INCOMPLETE  BLOCKED
+NO_VIABLE_PATH    BUDGET_EXHAUSTED  FRONTIER_EXHAUSTED
+```
+
+`RESEARCH_READY` is a conjunction of gates over admitted evidence, recorded
+objections, the contract and the claim's scope — central-question support, zero
+fatal objections, required comparisons and replication, evidence scope matching
+the claim, no unauthorised goal drift, no unresolved contradiction, a closed
+quality gap, and the contract's required outputs.
 
 ## Trajectory-conditioned exploration
 
@@ -118,6 +210,21 @@ scheduler and adds hypothesis-aware disagreement/resolution estimates alongside
 scientific gain, transfer, frontier value, cost, and risk. Changing competing
 hypotheses can change the experiment ranking. These are estimates from declared
 predictions—not measured information gain or validated utility signals for RL.
+
+Above that heuristic sits a research-decision layer reading the contract, the
+quality state, the review debt and the resource state: central-question value,
+objection repair value, quality-gap value, redesign exhaustion, resource
+discipline, goal-drift penalty, a block on routine evidence-gathering while a
+fatal objection stands unrepaired, and a penalty for action types that are
+currently inert. The layer is inert until a project has recorded project-level
+state, so a bare question-and-world run schedules exactly as it did before.
+A refused action returns its reason rather than disappearing from the menu.
+
+Worker context is the derived decision journal — contract, current strategy and
+why it may not hold, the next decisive action, relevant WORLD evidence, standing
+objections, remaining budget — not the accumulated trajectory. For experiments
+it also carries outcome contingencies in branches. Nothing in this runtime is a
+calibrated predictor, so no branch carries a probability.
 
 ## Evidence and promotion
 

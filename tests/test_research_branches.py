@@ -8,6 +8,24 @@ from farfield.extras.openworld.actions import eligible_actions, THEORIZE, SURVEY
 
 
 class BranchTests(unittest.TestCase):
+    def test_other_question_literature_does_not_enter_branch_context(self):
+        from test_openworld_workers import ReplayClient, THEORY
+        from farfield.extras.openworld.workers import LegacyResearchWorkers
+        state = self.state()
+        state.goal = 'query costs for skewed table records'
+        state.artifacts.append({'kind': 'literature_survey', 'question_id': 'OTHER',
+            'research_state': {'bottleneck_gap': 'FOREIGN_QUESTION_CANARY'},
+            'source_documents': {'other-paper': {'full_text_spans': [
+                {'text': 'FOREIGN_DOCUMENT_CANARY', 'verified': True}]}}})
+        client = ReplayClient([{**THEORY, 'falsifier': 'cache does not reduce matched scan count',
+                                'research_metadata': self.metadata()}])
+        result = LegacyResearchWorkers(client=client).theorize(ActionInstance(SPECS[THEORIZE],
+            target='Q1', extra={'research_lane': 'assumption_reframe', 'hop': 1}), state.view())
+        self.assertEqual(result.status, 'theorized', result.extras)
+        prompt = client.prompts[0][1]
+        self.assertNotIn('FOREIGN_QUESTION_CANARY', prompt)
+        self.assertNotIn('FOREIGN_DOCUMENT_CANARY', prompt)
+
     def test_worker_preserves_research_metadata_without_inventing_it(self):
         metadata = {'assumptions': ['fixed representation'], 'mechanism_delta': 'adaptive state'}
         card = card_from_payload({'assumption': 'fixed representation',

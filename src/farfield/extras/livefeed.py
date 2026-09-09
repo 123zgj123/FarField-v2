@@ -314,11 +314,28 @@ class CompositeFeed:
         arxiv: ArxivFeed | None = None,
         scholar: Any = None,
         openalex: Any = None,
+        seed_ids: tuple[str, ...] = (),
+        document_fetcher: Any = None,
     ) -> None:
         self.arxiv = arxiv or ArxivFeed()
         self._search_scholar = scholar
         self._search_openalex = openalex
         self.last_sources_blocked: list[dict[str, Any]] = []
+        if any(not re.fullmatch(r"\d{4}\.\d{4,5}(?:v\d+)?", ident) for ident in seed_ids):
+            raise ValueError("literature seeds must be arXiv identifiers")
+        self.seed_ids = tuple(dict.fromkeys(seed_ids))
+        self.document_fetcher = document_fetcher
+        self._documents: dict[str, dict[str, Any]] = {}
+
+    def read_work(self, work: FreshWork) -> dict[str, Any] | FeedBlocked:
+        from .sources import read_arxiv_document
+        key = work.cite_id()
+        if key not in self._documents:
+            document = read_arxiv_document(work, fetcher=self.document_fetcher)
+            if isinstance(document, FeedBlocked):
+                return document
+            self._documents[key] = document
+        return self._documents[key]
 
     def _scholar(self, query: str, max_results: int) -> list[FreshWork] | FeedBlocked:
         from .sources import search_scholar
@@ -487,8 +504,18 @@ class CompositeFeed:
                 group = [work for item in result if (work := as_work(item)) is not None]
                 if group:
                     groups.append(group)
+        # Seeds supplement live search and still pass normal paper admission.
+        seeded = []
+        for ident in self.seed_ids:
+            document = self.read_work(FreshWork("", "", arxiv_id=ident))
+            if isinstance(document, FeedBlocked):
+                blocked.append(document.to_dict())
+            else:
+                seeded.append(FreshWork.from_dict(document))
         self.last_sources_blocked = blocked
         merged = merge_works(*groups)
+        seen = {w.cite_id() for w in seeded}
+        merged = seeded + [w for w in merged if w.cite_id() not in seen]
         if not merged:
             return last_block or FeedBlocked(
                 attempted="survey_around", reason="empty feed"

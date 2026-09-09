@@ -10,11 +10,15 @@ JSON and never open a socket.
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
+from datetime import datetime, timezone
+from html.parser import HTMLParser
 
 from .livefeed import FeedBlocked, FreshWork, as_work
 
@@ -29,6 +33,95 @@ USER_AGENT = (
     "farfield-sources/1.0 (research tool; mailto:farfield-dev@localhost)"
 )
 Fetcher = Callable[[str], bytes]
+
+
+class _PaperHTML(HTMLParser):
+    """Extract source text and bibliography boundaries; never infer citations."""
+
+    def __init__(self):
+        super().__init__()
+        self.meta, self.parts, self.heading, self.bibliography = {}, [], [], []
+        self.in_heading = False
+        self.in_bib = False
+        self.skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag in {"script", "style"}:
+            self.skip += 1
+        if tag == "meta" and attrs.get("name"):
+            self.meta[attrs["name"]] = attrs.get("content", "")
+        if tag == "h1":
+            self.in_heading = True
+        if tag == "li" and "ltx_bibitem" in attrs.get("class", "").split():
+            self.in_bib = True
+        if self.in_bib and tag == "a":
+            self.bibliography.append(attrs.get("href", ""))
+        if tag in {"p", "div", "li", "h1", "h2", "section"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style"}:
+            self.skip = max(0, self.skip - 1)
+        if tag == "h1":
+            self.in_heading = False
+        if tag == "li":
+            self.in_bib = False
+
+    def handle_data(self, data):
+        if self.skip:
+            return
+        self.parts.append(data)
+        if self.in_heading:
+            self.heading.append(data)
+        if self.in_bib:
+            self.bibliography.append(data)
+
+
+def read_arxiv_document(work: FreshWork, *, fetcher: Fetcher | None = None) -> dict | FeedBlocked:
+    """Read the primary paper, retaining exact text, citation links and hashes.
+
+    This attests source documents, not claims in them. No HTML, mismatched
+    identity, or a failed endpoint yields a stand-in document. Extraction
+    is intentionally bounded; the omitted text is not claimed to be read.
+    """
+    from .verifypapers import bare_arxiv, title_overlap, TITLE_OVERLAP
+    ident = bare_arxiv(work.arxiv_id)
+    if not re.fullmatch(r"\d{4}\.\d{4,5}", ident):
+        return FeedBlocked(work.cite_id(), "full_text_reader_requires_arxiv_id")
+    documents, parsed = [], {}
+    for kind in ("abs", "html"):
+        url = f"https://arxiv.org/{kind}/{work.arxiv_id}"
+        raw = _get(url, fetcher)
+        if isinstance(raw, FeedBlocked):
+            return raw
+        page = _PaperHTML()
+        page.feed(raw.decode("utf-8", "replace"))
+        parsed[kind] = page
+        documents.append({"url": url, "sha256": hashlib.sha256(raw).hexdigest(),
+                          "retrieved_at": datetime.now(timezone.utc).isoformat()})
+    meta, full = parsed["abs"].meta, parsed["html"]
+    title = meta.get("citation_title", "")
+    if (bare_arxiv(meta.get("citation_arxiv_id", "")) != ident or not title
+            or work.title and title_overlap(title, work.title) < TITLE_OVERLAP):
+        return FeedBlocked(ident, "primary_document_identity_mismatch")
+    heading = " ".join(" ".join(full.heading).split())
+    if not heading or title_overlap(title, heading) < TITLE_OVERLAP:
+        return FeedBlocked(ident, "full_text_identity_or_content_unavailable")
+    text = re.sub(r"[ \t]+", " ", "".join(full.parts)).strip()
+    refs = re.findall(r"(?:arxiv(?:\.org/(?:abs|pdf|html)/|\s*:\s*))(\d{4}\.\d{4,5})(?:v\d+)?",
+                      " ".join(full.bibliography), flags=re.I)
+    return {**work.to_dict(), "title": title,
+            "abstract": meta.get("citation_abstract") or work.abstract,
+            "published": (meta.get("citation_online_date") or meta.get("citation_date") or work.published).replace("/", "-"),
+            "first_published": meta.get("citation_date", "").replace("/", "-"),
+            "references": list(dict.fromkeys(refs)),
+            "full_text_spans": [{"text": text[:16000], "verified": True,
+                "url": documents[1]["url"], "source_digest": documents[1]["sha256"],
+                "start": 0, "end": min(len(text), 16000), "total_characters": len(text),
+                "truncated": len(text) > 16000}],
+            "source_documents": documents,
+            "epistemic": "SOURCE_DOCUMENT_NOT_EXPERIMENT"}
 
 
 def _http_get(url: str) -> bytes:

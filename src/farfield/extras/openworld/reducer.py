@@ -8,8 +8,16 @@ from typing import Any, Iterable, Mapping
 
 from .events import EventLog, ScientificEvent
 from .frontier import debt_from_state, frontier_from_state, graph_from_state
+from .contract import ResearchContract, alignment_of_question, contract_from_state
 from .kernel import refuse_generated_promotion
 from .progress import update_metrics
+from .quality import (
+    ReviewRecord,
+    compute_quality,
+    normalize_review,
+    resolution_admissible,
+)
+from .resources import compute_resources
 from .state import ScientificState, refresh_research_views
 
 
@@ -220,15 +228,157 @@ def reduce_event(
         merged = dict(current.debt)
         merged.update({str(k): int(v) for k, v in dict(payload.get("debt") or payload).items()})
         current.debt = merged
+    elif kind == "ContractSet":
+        # A project gets exactly one root question. Replacing it is a different
+        # project and must be a new contract, never a quiet in-place rewrite.
+        contract = ResearchContract.from_dict(payload)
+        existing = ResearchContract.from_dict(current.contract)
+        if existing.is_set and existing.root_question != contract.root_question:
+            current.artifacts.append({
+                "kind": "contract_change_refused",
+                "reason": "root_question_is_immutable_within_a_project",
+                "existing_root_question": existing.root_question,
+                "rejected_root_question": contract.root_question,
+            })
+        else:
+            current.contract = contract.to_dict()
+            if not current.goal:
+                current.goal = contract.root_question
+    elif kind == "ContractAmended":
+        existing = ResearchContract.from_dict(current.contract)
+        if existing.is_set:
+            current.contract = existing.amended(payload).to_dict()
+    elif kind == "ReviewRecorded":
+        row = normalize_review(payload, tick=int(current.ticks))
+        row["project_epoch"] = int(current.project_epoch)
+        if not any(str(item.get("review_id") or "") == row["review_id"] for item in current.reviews):
+            current.reviews.append(row)
+    elif kind == "ReviewResolved":
+        rid = str(payload.get("review_id") or "")
+        target = next((item for item in current.reviews
+                       if str(item.get("review_id") or "") == rid), None)
+        if target is not None and str(target.get("status") or "") != "resolved":
+            ok, why = resolution_admissible(
+                target,
+                resolution_kind=str(payload.get("resolution_kind") or ""),
+                evidence_id=str(payload.get("resolution_evidence_id") or ""),
+                evidence_rows=current.evidence_records,
+            )
+            if ok:
+                target.update(
+                    status="resolved",
+                    resolution_kind=str(payload.get("resolution_kind") or ""),
+                    resolution_evidence_id=str(payload.get("resolution_evidence_id") or ""),
+                    resolved_at_tick=int(current.ticks),
+                )
+            else:
+                # Refusing prose repair is itself state: it is how the system
+                # learns that it wasted a turn writing instead of measuring.
+                target["repair_refusals"] = int(target.get("repair_refusals") or 0) + 1
+                target["last_repair_refusal"] = why
+                current.metrics["caveat_only_repair_refused"] = int(
+                    current.metrics.get("caveat_only_repair_refused") or 0) + 1
+    elif kind == "ReviewRepairRefused":
+        current.metrics["caveat_only_repair_refused"] = int(
+            current.metrics.get("caveat_only_repair_refused") or 0) + 1
+    elif kind == "DesignRevised":
+        row = dict(payload)
+        row.setdefault("epistemic", "GENERATED")
+        row.setdefault("project_epoch", int(current.project_epoch))
+        row.setdefault("revised_at_tick", int(current.ticks))
+        if not any(str(item.get("revision_id") or "") == str(row.get("revision_id") or "")
+                   for item in current.design_revisions if row.get("revision_id")):
+            current.design_revisions.append(row)
+        for rid in row.get("addresses_reviews") or []:
+            for item in current.reviews:
+                if str(item.get("review_id") or "") == str(rid) and item.get("status") == "open":
+                    item["status"] = "repairing"
+                    item["repairing_revision_id"] = str(row.get("revision_id") or "")
+    elif kind == "LineageRetired":
+        row = dict(payload)
+        row.setdefault("retired_at_tick", int(current.ticks))
+        row.setdefault("project_epoch", int(current.project_epoch))
+        lid = str(row.get("lineage_id") or "")
+        if lid and lid in current.active_lineages:
+            current.active_lineages.remove(lid)
+        if not any(str(item.get("lineage_id") or "") == lid for item in current.retired_lineages):
+            current.retired_lineages.append(row)
+        for theory in current.theories:
+            if str(theory.get("lineage_id") or "") == lid or str(theory.get("id") or "") in set(
+                    str(x) for x in row.get("theory_ids") or []):
+                theory["status"] = "retired"
+                theory["retired_reason"] = str(row.get("reason") or "")
+    elif kind == "ProjectPivoted":
+        # WORLD evidence, the contract and the failure record survive a pivot.
+        # Speculative narrative does not: that is the whole point.
+        current.project_epoch = int(current.project_epoch) + 1
+        row = dict(payload, project_epoch=current.project_epoch,
+                   pivoted_at_tick=int(current.ticks))
+        for theory in current.theories:
+            if theory.get("status") not in {"retired"}:
+                theory["status"] = "retired"
+                theory["retired_reason"] = str(payload.get("reason") or "project_pivot")
+                theory["retired_epoch"] = int(current.project_epoch)
+        for lineage in list(current.active_lineages):
+            if not any(str(item.get("lineage_id") or "") == lineage
+                       for item in current.retired_lineages):
+                current.retired_lineages.append({
+                    "lineage_id": lineage, "reason": str(payload.get("reason") or "project_pivot"),
+                    "project_epoch": current.project_epoch, "retired_at_tick": int(current.ticks),
+                })
+        current.active_lineages = []
+        for question in list(current.open_questions):
+            current.block_question(str(question.get("id") or ""), reason="retired_by_project_pivot")
+        for review in current.reviews:
+            if review.get("status") == "open" and review.get("repair_type") == "project_pivot":
+                review["status"] = "resolved"
+                review["resolution_kind"] = "design_repair"
+                review["resolved_at_tick"] = int(current.ticks)
+        current.artifacts.append({"kind": "project_pivot", **row})
+        current.decision_journal.append({
+            "kind": "project_pivot", "tick": int(current.ticks),
+            "project_epoch": current.project_epoch,
+            "reason": str(payload.get("reason") or ""),
+            "preserved": "world_evidence_contract_failure_lessons",
+        })
+    elif kind == "DecisionRecorded":
+        row = dict(payload)
+        row.setdefault("tick", int(current.ticks))
+        row.setdefault("project_epoch", int(current.project_epoch))
+        current.decision_journal.append(row)
+        if len(current.decision_journal) > 40:
+            current.decision_journal = current.decision_journal[-40:]
     elif kind == "ArtifactAdded":
         row = dict(payload)
         if row not in current.artifacts:
             current.artifacts.append(row)
+        if row.get("kind") == "action_attempt":
+            # Watermarks for the value preconditions: what had been recorded the
+            # last time a reflecting or archiving action ran.
+            if str(row.get("action_type") or "") == "REFLECT":
+                current.metrics["failures_at_last_reflect"] = len(current.failed_designs)
+            elif str(row.get("action_type") or "") == "ARCHIVE":
+                current.metrics["closed_at_last_archive"] = (
+                    len(current.resolved_questions) + len(current.failed_designs))
     elif kind == "TickAdvanced":
         current.ticks = int(current.ticks) + 1
         if payload.get("meaningful"):
             current.last_progress_tick = current.ticks
             current.metrics["meaningful_events"] = int(current.metrics.get("meaningful_events") or 0) + 1
+        if payload.get("research_meaningful"):
+            current.last_research_progress_tick = current.ticks
+            current.metrics["research_progress_events"] = int(
+                current.metrics.get("research_progress_events") or 0) + 1
+        for name in ("central_question_progress", "decision_relevant_evidence",
+                     "quality_gap_reduction", "critical_review_resolution",
+                     "peripheral_question_progress", "caveat_only_repair",
+                     "same_failure_repetition", "low_value_activity",
+                     "successful_reorientation", "replication_progress",
+                     "quality_dimension_progress", "objection_discovery",
+                     "failure_information"):
+            value = int(payload.get(name) or 0)
+            if value:
+                current.metrics[name] = int(current.metrics.get(name) or 0) + value
         if payload.get("goal_drift"):
             current.metrics["goal_drift"] = int(current.metrics.get("goal_drift") or 0) + 1
         current.debt = debt_from_state(current)
@@ -245,12 +395,44 @@ def reduce_event(
             harness_general=bool(payload.get("harness_general")),
             regression=bool(payload.get("regression")),
         )
+        refresh_project_views(current)
         return current
     refresh_research_views(current)
     current.debt = debt_from_state(current)
     current.frontier = frontier_from_state(current)
     current.graph = graph_from_state(current)
+    refresh_project_views(current)
     return current
+
+
+def refresh_project_views(state: ScientificState) -> None:
+    """Recompute contract-level projections after every admitted event.
+
+    Quality and resources are derived, not written: no worker and no reviewer
+    can assert that this project is good enough or that it has budget left.
+    """
+    state.quality = compute_quality(state)
+    state.resources = compute_resources(state)
+    contract = contract_from_state(state)
+    if contract.is_set:
+        questions = (
+            list(state.open_questions) + list(state.resolved_questions)
+            + list(state.partial_questions) + list(state.blocked_questions)
+        )
+        drifted = []
+        for question in questions:
+            alignment = alignment_of_question(contract, question, known=questions)
+            question["root_alignment"] = alignment.status
+            if alignment.drifted:
+                drifted.append(str(question.get("id") or ""))
+        state.debt = dict(state.debt or {})
+        state.debt["goal_drift_debt"] = len(drifted)
+        state.debt.update({
+            key: value for key, value in
+            compute_quality(state)["review_debt"].items()
+        })
+        state.debt["quality_gap"] = int(state.quality.get("quality_gap_size") or 0)
+        state.metrics["drifted_questions"] = drifted
 
 
 def apply_events(
@@ -270,6 +452,9 @@ def apply_events(
     current.debt = debt_from_state(current)
     current.frontier = frontier_from_state(current)
     current.graph = graph_from_state(current)
+    # Project views are derived from the state these recomputations just
+    # rebuilt, so they must be refreshed last or their debt keys are erased.
+    refresh_project_views(current)
     return current
 
 
@@ -280,6 +465,7 @@ def rebuild_state(log: EventLog) -> ScientificState:
     state.debt = debt_from_state(state)
     state.frontier = frontier_from_state(state)
     state.graph = graph_from_state(state)
+    refresh_project_views(state)
     return state
 
 

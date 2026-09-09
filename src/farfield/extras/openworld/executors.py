@@ -16,6 +16,9 @@ from .actions import (
     ARCHIVE,
     ASK,
     FORK_LINEAGE,
+    PROJECT_PIVOT,
+    REDESIGN,
+    REVIEW,
     OBSERVE,
     PROBE,
     REFLECT,
@@ -738,12 +741,47 @@ def execute_survey(env: Any, action: ActionInstance) -> CandidateResult:
 
 
 def execute_reflect(env: Any, action: ActionInstance) -> CandidateResult:
+    """Turn failures into reusable lessons and name the ones that keep recurring.
+
+    This used to return a summary and emit no events at all — an action that
+    always reported success and was structurally incapable of changing anything.
+    Reflection's declared effect is ``record_pathology_or_anomaly``; it now does
+    that, and a repeated failure signature becomes an anomaly the controller can
+    act on rather than a fact only a human reader would notice.
+    """
     from .evolve import pathology_ready
+    from .restart import failure_lesson
 
     ready = pathology_ready(env.pathologies)
+    known = {str(row.get("signature") or "") for row in env.state.artifacts
+             if row.get("kind") == "failure_lesson"}
+    counts: dict[str, int] = {}
+    events, lessons = [], []
+    for row in env.state.failed_designs:
+        signature = "|".join(str(row.get(key) or "") for key in
+                             ("action_type", "theory_id", "reason"))
+        counts[signature] = counts.get(signature, 0) + 1
+        if signature in known:
+            continue
+        known.add(signature)
+        lesson = {**failure_lesson(row), "kind": "failure_lesson", "signature": signature,
+                  "id": f"lesson-{len(known)}"}
+        lessons.append(lesson)
+        events.append(make_event("ArtifactAdded", lesson, action_type=REFLECT))
+    repeated = sorted(name for name, count in counts.items() if count >= 2)
+    for signature in repeated:
+        text = f"repeated_failure:{signature}"
+        if text not in env.state.anomalies:
+            events.append(make_event("ArtifactAdded", {
+                "kind": "anomaly", "id": text, "text": text,
+                "why_it_matters": "the same design failed the same way twice; "
+                                  "repeating it is not an experiment",
+            }, action_type=REFLECT))
     return CandidateResult(
-        status="reflected",
-        extras={"pathologies": [row.to_dict() for row in ready]},
+        status="reflected" if events else "nothing_new_to_reflect_on",
+        events=events,
+        extras={"pathologies": [row.to_dict() for row in ready],
+                "lessons": lessons, "repeated_failures": repeated},
     )
 
 
@@ -783,25 +821,423 @@ def execute_synthesize(env: Any, action: ActionInstance) -> CandidateResult:
 
 
 def execute_archive(env: Any, action: ActionInstance) -> CandidateResult:
-    return CandidateResult(status="archived")
+    """Record what was closed, so archiving is idempotent and inspectable.
+
+    Previously a no-op that reported success, which made it look like work every
+    time it ran and gave the value precondition nothing to check against.
+    """
+    closed = sorted(str(row.get("id") or "") for row in env.state.resolved_questions)
+    failed = sorted({"|".join(str(row.get(key) or "") for key in ("action_type", "theory_id"))
+                     for row in env.state.failed_designs})
+    previous = next((row for row in reversed(env.state.artifacts)
+                     if row.get("kind") == "archive_record"), {})
+    if (list(previous.get("closed_questions") or []) == closed
+            and list(previous.get("closed_designs") or []) == failed):
+        return CandidateResult(status="nothing_new_to_archive",
+                               extras={"reason": "archive_already_records_this_set"})
+    record = {"kind": "archive_record", "id": f"archive-{len(env.state.artifacts) + 1}",
+              "closed_questions": closed, "closed_designs": failed,
+              "epistemic": "GENERATED",
+              "note": "an archive entry is bookkeeping, never a promotion"}
+    return CandidateResult(status="archived",
+                           events=[make_event("ArtifactAdded", record, action_type=ARCHIVE)],
+                           extras=record)
+
+
+def fork_candidates(state: Any) -> list[dict[str, Any]]:
+    """Directions this project could pursue in parallel, grounded in its state.
+
+    A lane is only real if a later tick can act on it. These come from recorded
+    facts — quality dimensions that are short and name their own repair, and
+    competing explanations that were written down and never tested — not from
+    invented alternatives.
+    """
+    quality = getattr(state, "quality", {}) or {}
+    if not quality.get("dimensions"):
+        from .quality import compute_quality
+
+        quality = compute_quality(state)
+    dimensions = quality.get("dimensions") or {}
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    # Capability gaps and untheorized questions are branch points too, and they
+    # exist before any quality projection does.
+    for name in list(getattr(state, "missing_capabilities", []) or []):
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append({"lane": f"capability:{name}", "capability": name,
+                    "next_action": "ACQUIRE",
+                    "because": "a missing capability blocks part of the frontier"})
+    explained = {str(row.get("question_id") or row.get("target") or "")
+                 for row in getattr(state, "theories", []) or []}
+    for question in list(getattr(state, "open_questions", []) or []) + list(
+            getattr(state, "blocked_questions", []) or []):
+        qid = str(question.get("id") or "")
+        if not qid or qid in explained or qid in seen:
+            continue
+        seen.add(qid)
+        out.append({"lane": f"understanding:{qid}", "question_id": qid,
+                    "next_action": "THEORIZE",
+                    "because": "an open question has no candidate explanation"})
+    for name in list(quality.get("quality_gap") or []):
+        work = list((dimensions.get(name) or {}).get("required_next_work") or [])
+        if not work or name in seen:
+            continue
+        seen.add(name)
+        out.append({
+            "lane": f"quality:{name}", "dimension": name, "next_action": work[0],
+            "because": "; ".join((dimensions.get(name) or {}).get("blocking_reasons") or []),
+        })
+    measured = {str(row.get("theory_id") or "") for row in getattr(state, "evidence_records", []) or []}
+    for theory in getattr(state, "theories", []) or []:
+        tid = str(theory.get("id") or "")
+        if (theory.get("role") != "competing_explanation" or not tid
+                or tid in measured or tid in seen or theory.get("status") == "retired"):
+            continue
+        seen.add(tid)
+        out.append({
+            "lane": f"competing:{tid}", "theory_id": tid, "next_action": "PROBE",
+            "because": "a recorded competing explanation has never been tested",
+        })
+    return out
 
 
 def execute_fork(env: Any, action: ActionInstance) -> CandidateResult:
-    branches = fork_trajectories(env.state, harness_version=env.harness.version_id)
+    """Open lineages that later ticks can actually pursue."""
+    candidates = list(action.extra.get("fork_candidates") or fork_candidates(env.state))
+    if len(candidates) < 2:
+        return CandidateResult(
+            status="blocked",
+            events=[make_event("ActionBlocked", {"reason": "no_distinct_branch_to_open"},
+                               action_type=FORK_LINEAGE)],
+            extras={"reason": "no_distinct_branch_to_open"})
+    branches = fork_trajectories(env.state, harness_version=env.harness.version_id,
+                                 n=len(candidates),
+                                 preferred_actions=tuple(row["next_action"] for row in candidates))
+    lineages = [str(row["lane"]) for row in candidates]
+    events = [make_event("LineageForked", {
+        "lineages": lineages,
+        "candidates": candidates,
+        "harness_version": env.harness.version_id,
+    }, action_type=FORK_LINEAGE)]
     return CandidateResult(
         status="forked",
-        events=[
-            make_event(
-                "LineageForked",
-                {"lineages": [row.lane for row in branches]},
-                action_type=FORK_LINEAGE,
-            )
-        ],
+        events=events,
         extras={
-            "lanes": [row.lane for row in branches],
-            "next_actions": [row.next_action for row in branches],
+            "lanes": lineages,
+            "next_actions": [row["next_action"] for row in candidates],
+            "branches": [row.to_dict() for row in branches],
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Project-level executors
+# ---------------------------------------------------------------------------
+
+
+def _structural_objections(state: Any) -> list[dict[str, Any]]:
+    """Objections the canonical state already proves, with no model in the loop.
+
+    This is deliberately *not* an LLM reviewer. Everything below is a fact the
+    runtime recorded about its own evidence: an unreported sample size, a
+    measure that did not move for the oracle, a control arm that measured
+    nothing, a single-world result. Making these structural means the control
+    loop keeps working offline and cannot be talked out of an objection.
+
+    A model reviewer can add judgment dimensions on top; it cannot remove these.
+    """
+    from .contract import contract_from_state
+    from .quality import DIMENSIONS
+
+    contract = contract_from_state(state)
+    min_sample = float((contract.resource_limits or {}).get("min_sample_size") or 0)
+    probes = [
+        dict(row) for row in state.evidence_records
+        if str(row.get("role") or "") == "ProbeEvidence"
+        and str(row.get("epistemic") or "") == "WORLD"
+        and row.get("attested")
+    ]
+    out: list[dict[str, Any]] = []
+
+    def add(**row: Any) -> None:
+        row.setdefault("dimension", "technical_correctness")
+        if row["dimension"] not in DIMENSIONS:
+            row["dimension"] = "technical_correctness"
+        out.append(row)
+
+    for row in probes:
+        eid = str(row.get("evidence_id") or "")
+        tid = str(row.get("theory_id") or "")
+        qid = str(row.get("question_id") or "")
+        sample = row.get("sample_size")
+        if sample is None:
+            add(review_id=f"review-power-{eid}", severity="major",
+                dimension="experimental_adequacy",
+                objection=("the result reports no sample size, so its power is "
+                           "unknown and it cannot support the claim"),
+                affected_claim=str(row.get("claim") or tid), affected_design=eid,
+                repair_type="experiment_redesign", requires_new_evidence=True,
+                theory_id=tid, question_id=qid)
+        elif min_sample and float(sample) < min_sample:
+            add(review_id=f"review-power-{eid}", severity="major",
+                dimension="experimental_adequacy",
+                objection=(f"n={sample:g} is below the contract's minimum "
+                           f"informative sample of {min_sample:g}; a positive "
+                           "result at this size is not decisive"),
+                affected_claim=str(row.get("claim") or tid), affected_design=eid,
+                repair_type="experiment_redesign", requires_new_evidence=True,
+                theory_id=tid, question_id=qid)
+        if row.get("dv_blind"):
+            add(review_id=f"review-measure-{eid}", severity="fatal",
+                dimension="measurement_validity",
+                objection="the measure did not respond to the oracle placebo; it "
+                          "is not measuring the claimed quantity",
+                affected_design=eid, repair_type="measurement_redesign",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+        if row.get("object_absent"):
+            add(review_id=f"review-baseline-{eid}", severity="fatal",
+                dimension="baseline_strength",
+                objection="both arms measured nothing; there is no comparison here",
+                affected_design=eid, repair_type="experiment_redesign",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+        elif row.get("ablation_required"):
+            add(review_id=f"review-ablation-{eid}", severity="major",
+                dimension="baseline_strength",
+                objection="a competing mechanism is not ablated, so the effect is "
+                          "not attributable to the proposed one",
+                affected_design=eid, repair_type="stronger_baseline",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+        if row.get("cannot_corroborate"):
+            add(review_id=f"review-validity-{eid}", severity="fatal",
+                dimension="technical_correctness",
+                objection="; ".join(str(x) for x in row.get("validation_gaps") or [])
+                          or "validation gates did not pass for this evidence",
+                affected_design=eid, repair_type="experiment_redesign",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+        if row.get("outcome") == "supports" and not row.get("mechanism_validated"):
+            add(review_id=f"review-mechanism-{eid}", severity="major",
+                dimension="mechanism_support",
+                objection="a positive arithmetic result is not a verified "
+                          "mechanism; the causal account is untested",
+                affected_design=eid, repair_type="causal_redesign",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+        if not any(other.get("replication_of") == eid for other in probes):
+            add(review_id=f"review-replication-{eid}", severity="major",
+                dimension="replication",
+                objection="a single-world result does not generalize; no heldout "
+                          "replication has been attempted",
+                affected_design=eid, repair_type="broader_evaluation",
+                requires_new_evidence=True, theory_id=tid, question_id=qid)
+
+    # Novelty and importance cannot be executed into existence. What the state
+    # *can* ground is that a literature check ran and did not find the claim
+    # already stated — which supports "not obviously known", not "important".
+    surveys = [row for row in state.artifacts
+               if row.get("kind") == "literature_survey" and row.get("works")]
+    for theory in state.theories:
+        tid = str(theory.get("id") or "")
+        if theory.get("role") == "competing_explanation" or not tid:
+            continue
+        checks = [row for row in surveys if str(row.get("theory_id") or "") == tid]
+        if not checks:
+            continue
+        prior = (checks[-1].get("prior") or {})
+        if prior.get("kills"):
+            add(review_id=f"review-novelty-{tid}", severity="fatal", dimension="novelty",
+                objection="verified literature already states this claim",
+                affected_claim=str(theory.get("claim") or tid),
+                repair_type="project_pivot", requires_new_evidence=True, theory_id=tid)
+            continue
+        refs = [str(c) for c in checks[-1].get("citations") or []]
+        add(review_id=f"assessment-novelty-{tid}", severity="minor", dimension="novelty",
+            objection="", assessment="partial", supporting_refs=refs,
+            assessment_basis=("a prior check over verified literature did not find this "
+                              "claim already stated; that is not a novelty proof"),
+            repair_type="writing_only", theory_id=tid)
+
+    drifted = list((state.metrics or {}).get("drifted_questions") or [])
+    if drifted:
+        central = ((state.quality or {}).get("dimensions") or {}).get(
+            "central_claim_support") or {}
+        all_drifted = "PROJECT_PIVOT" in (central.get("required_next_work") or [])
+        add(review_id=f"review-drift-epoch{int(getattr(state, 'project_epoch', 0))}",
+            severity="fatal" if all_drifted else "major",
+            dimension="central_claim_support",
+            objection=("the active line of work no longer answers the contract's "
+                       f"root question; drifted questions: {sorted(drifted)}"),
+            repair_type="project_pivot" if all_drifted else "assumption_reframe",
+            requires_new_evidence=True)
+    return out
+
+
+def execute_review(env: Any, action: ActionInstance) -> CandidateResult:
+    """Record structured objections against the current project state.
+
+    Reviewer judgment is a planning signal. It opens repair debt and lowers
+    quality dimensions; it never adds evidence and never raises belief. Ten
+    reviewers agreeing is still zero measurements.
+    """
+    from .quality import normalize_review
+
+    proposed = list(action.extra.get("reviews") or []) + _structural_objections(env.state)
+    known = {str(row.get("review_id") or "") for row in env.state.reviews}
+    events, recorded = [], []
+    for row in proposed:
+        record = normalize_review(row, tick=int(env.state.ticks))
+        if record["review_id"] in known:
+            continue
+        known.add(record["review_id"])
+        recorded.append(record)
+        events.append(make_event("ReviewRecorded", record, action_type=REVIEW,
+                                 frontier_target_id=action.frontier_target_id))
+    return CandidateResult(
+        status="reviewed" if recorded else "no_new_objections",
+        events=events,
+        extras={
+            "reviews": recorded,
+            "objection_count": len(recorded),
+            "basis": "structural_objections_from_canonical_state",
+            "not_evidence": "reviewer judgment never corroborates a claim",
+        },
+    )
+
+
+def execute_redesign(env: Any, action: ActionInstance) -> CandidateResult:
+    """Turn an objection into an explicit DesignRevision.
+
+    Not "generate another hypothesis". A revision has to name what failed, which
+    assumption it invalidates, which repairs were considered and rejected, what
+    is preserved, what changes, and the condition under which this revision is
+    itself abandoned early.
+    """
+    from .quality import REPAIR_DIMENSION, ReviewRecord
+
+    demand = dict(action.extra.get("demand") or {})
+    review = next((dict(row) for row in env.state.reviews
+                   if str(row.get("review_id") or "") == str(demand.get("review_id") or "")
+                   and demand.get("review_id")), {})
+    record = ReviewRecord.from_dict(review) if review else None
+    dimension = str(demand.get("dimension") or (record.dimension if record else "technical_correctness"))
+    selected = str(demand.get("repair_type") or (record.repair_type if record else "experiment_redesign"))
+    theory_id = str(demand.get("theory_id") or action.target or "")
+    parent = next((dict(row) for row in env.state.theories
+                   if str(row.get("id") or "") == theory_id), {})
+    failures = [dict(row) for row in env.state.failed_designs
+                if str(row.get("theory_id") or "") == theory_id]
+
+    candidates = [
+        name for name in
+        ("experiment_redesign", "measurement_redesign", "stronger_baseline",
+         "causal_redesign", "broader_evaluation", "assumption_reframe",
+         "representation_change")
+        if REPAIR_DIMENSION.get(name) == dimension or name == selected
+    ] or [selected]
+    rejected = [
+        {"repair": name,
+         "why_not": f"does not address {dimension}: the objection survives it"}
+        for name in candidates if name != selected
+    ]
+    root_cause = (
+        str(demand.get("objection") or "")
+        or (failures[-1].get("reason") if failures else "")
+        or f"{dimension}_below_contract"
+    )
+    revision = {
+        "revision_id": (
+            f"rev-{int(env.state.project_epoch)}-{dimension}-"
+            f"{len(env.state.design_revisions) + 1}"
+        ),
+        "trigger": str(action.reason or "unresolved_objection"),
+        "parent_design": theory_id or str(demand.get("dimension") or ""),
+        "failure_root_cause": root_cause,
+        "invalidated_assumption": (
+            (parent.get("assumptions") or [""])[0] if parent.get("assumptions")
+            else f"the current design can establish {dimension}"
+        ),
+        "unresolved_objection": str(demand.get("review_id") or "") or root_cause,
+        "candidate_repairs": candidates,
+        "selected_repair": selected,
+        "rejected_repairs": rejected,
+        "preserved_components": [
+            name for name in
+            ("research_contract", "admitted_world_evidence", "verified_literature")
+        ] + ([f"question:{parent.get('question_id')}"] if parent.get("question_id") else []),
+        "changed_components": [dimension, selected],
+        "expected_resolution": (
+            f"new WORLD evidence that settles {dimension}; prose cannot close this"
+            if (record.requires_new_evidence if record else True)
+            else "a clearer statement of the existing result"
+        ),
+        "early_kill_condition": (
+            f"if the repaired design still cannot move {dimension} above its "
+            "contract requirement, retire this direction instead of repeating it"
+        ),
+        "addresses_reviews": [str(demand.get("review_id"))] if demand.get("review_id") else [],
+        "dimension": dimension,
+        "epistemic": "GENERATED",
+        "outcome": "open",
+    }
+    events = [make_event("DesignRevised", revision, action_type=REDESIGN,
+                         frontier_target_id=action.frontier_target_id)]
+    if theory_id and parent:
+        events.append(make_event("ActionFailed", {
+            "theory_id": theory_id, "reason": f"superseded_by_{revision['revision_id']}",
+            "question_id": parent.get("question_id"), "revision_id": revision["revision_id"],
+        }, action_type=REDESIGN))
+    return CandidateResult(status="redesigned", events=events,
+                           extras={"revision": revision, "selected_repair": selected})
+
+
+def execute_project_pivot(env: Any, action: ActionInstance) -> CandidateResult:
+    """Retire a direction without losing what it actually established.
+
+    WORLD evidence, the contract, live contradictions and failure lessons carry
+    forward. The speculative chain that produced the dead direction does not.
+    """
+    from .restart import clean_restart_projection
+
+    trigger = dict(action.extra.get("trigger") or {})
+    reason = str(trigger.get("reason") or action.reason or "direction_not_worth_continuing")
+    projection = clean_restart_projection(env.state, reason=reason)
+    events = [
+        make_event("LineageRetired", {
+            "lineage_id": lineage, "reason": reason,
+            "theory_ids": [row.get("id") for row in env.state.theories
+                           if str(row.get("lineage_id") or "") == lineage],
+        }, action_type=PROJECT_PIVOT)
+        for lineage in list(env.state.active_lineages)
+    ]
+    events.append(make_event("ProjectPivoted", {
+        "reason": reason, "trigger": trigger,
+        "preserved_world_evidence": [row.get("evidence_id")
+                                     for row in projection["world_evidence"]],
+        "failure_lessons": projection["failure_lessons"],
+        "root_question": projection["root_question"],
+        "remaining_resources": projection["remaining_resources"],
+    }, action_type=PROJECT_PIVOT, frontier_target_id=action.frontier_target_id))
+    events.append(make_event("ArtifactAdded", projection, action_type=PROJECT_PIVOT))
+    if env.workspace is not None:
+        dest = Path(env.workspace)
+        dest.mkdir(parents=True, exist_ok=True)
+        dest = dest / "CLEAN_RESTART.json"
+        dest.write_text(json.dumps(projection, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    # The frontier must not be left empty: a pivot restates the root question as
+    # a fresh, contract-aligned question rather than inventing a new topic.
+    contract_root = projection["root_question"] or env.state.goal
+    if contract_root:
+        events.append(make_event("QuestionCreated", {
+            "id": f"Q-root-e{int(env.state.project_epoch) + 1}",
+            "text": contract_root,
+            "lineage_id": f"line-root-e{int(env.state.project_epoch) + 1}",
+            "epistemic": "GENERATED",
+            "root_link": contract_root,
+            "restarted_from": "clean_restart_projection",
+        }, action_type=PROJECT_PIVOT))
+    return CandidateResult(status="pivoted", events=events,
+                           extras={"clean_restart": projection, "reason": reason})
 
 
 def maybe_gc(env: Any) -> None:
@@ -824,4 +1260,7 @@ DEFAULT_EXECUTORS = {
     SYNTHESIZE: execute_synthesize,
     ARCHIVE: execute_archive,
     FORK_LINEAGE: execute_fork,
+    REVIEW: execute_review,
+    REDESIGN: execute_redesign,
+    PROJECT_PIVOT: execute_project_pivot,
 }

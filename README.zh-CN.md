@@ -30,18 +30,23 @@
 - **先实验，再晋升结论。** 预注册双臂实验、精确 world 绑定、复现和适用的 heldout 检验约束结论强度。
 - **区分失败的含义。** 执行受阻、策略拒绝、科学负结果和不确定结果不会混为一谈。
 - **单独验证策略改进。** 没有可信的 heldout 评估，研究策略候选不能安装。
+- **管理科研项目，而不只是执行科研动作。** research contract 让原始问题在长程轨迹中不被替换；序数化的质量状态记录项目当前究竟够不够好；结构化异议形成的修复债务无法靠改写措辞消解；确实修不好的方向可以被放弃，同时保留它已经确立的证据。
 
 它适合希望在明确文献来源、冻结实验数据与可执行实验条件下，构建和审计自动科研流程的研究者。它不是“任意输入一个题目就自动得到可信论文”的工具。
 
 ## 唯一的科研控制循环
 
 ```text
+ResearchContract
+       ↓
 ScientificState → Frontier → Scheduler → Action → Existing Research Worker
        ↑                                                   ↓
        └── Scientific Event ← Trusted Kernel ← CandidateResult
 ```
 
 行动顺序取决于状态，而不是固定 pipeline。CLI 和控制台都调用 `run_research`；worker 不启动另一套独立科研任务。
+
+contract、质量状态、异议债务与资源状态都是从已采信事件重新推导的派生视图，因此恢复运行与实时运行结果一致。worker 无法写入其中任何一项：它只能产出证据或异议，视图随之更新。
 
 | 行动 | 复用的现有能力 |
 |---|---|
@@ -50,6 +55,11 @@ ScientificState → Frontier → Scheduler → Action → Existing Research Work
 | PROBE | 诊断、预注册 probe 构建、实际执行 |
 | VERIFY | 精确对象与产物检查、复现、显式 heldout world |
 | SYNTHESIZE | 研究简报、研究包、事实表、论文规划与草稿 |
+| REVIEW | 基于规范状态提出结构化异议；这是规划信号，不是证据 |
+| REDESIGN | 明确的设计修订，写明失败根因与提前放弃条件 |
+| PROJECT_PIVOT | 放弃当前方向，保留其 WORLD 证据与 contract，丢弃其叙事 |
+
+终止状态区分七种结局。运行循环正常结束、前沿暂时为空、生成了完整论文、预算耗尽——各自如实报告，其中任何一种都不等于研究已经完成。
 
 Trusted Kernel、事件溯源、provenance 与 WORLD/GENERATED 分离仍是信任边界。模型可以提出 claim 和脚本，不能自行宣布生成内容已经成为科学证据。
 
@@ -162,7 +172,7 @@ research_workers/<evidence-id>/candidates/<card-id>/
   paper/               可选论文草稿
 ```
 
-只有对应行动实际产出后才有相应文件。受阻任务可能没有测量值。`research_complete: false` 表示研究仍开放，不表示已经成功完成论文。运行目录与凭证不上传公共仓库。
+只有对应行动实际产出后才有相应文件。受阻任务可能没有测量值。运行结束会报告七种终止结局之一以及 `research_complete` 判定；该判定是对已采信证据、未决异议、contract 与结论适用范围的一组门槛的合取，不是"循环跑完了"的意思。运行目录与凭证不上传公共仓库。
 
 复现已有注册协议：
 
@@ -176,7 +186,8 @@ PYTHONPATH=src python3.11 -m farfield execute /path/to/candidate-folder --on-sli
 
 [验证记录](VALIDATION.md) 将需求映射到测试，并区分离线回归与真实服务观察。
 
-- **离线验证：** 主测试集 1,202 项，其中跳过 6 项；另有 30 项合同测试、2 项历史回归通过。
+- **离线验证：** 共 1,311 项测试，其中跳过 6 项——主测试集、30 项合同测试、历史回归、8 个能力级行为场景，以及长程轨迹保证。
+- **项目管理层：** 仅完成离线验证。contract、质量状态、review、redesign、pivot 与终止判定路径尚未经过任何真实模型或真实 world 的运行验证。
 - **真实集成：** 有界 Iris 任务检索到真实论文、生成结构化假设，并进入诊断和 probe 构建。最后记录的会话在执行前拒绝了指标不一致的方案，随后生成失败重构分支；没有产生 WORLD probe evidence 或已验证发现。
 - **轨迹覆盖：** 已有抽取和结构检索，但尚无广泛、可靠的轨迹库，也没有学得的 operator 选择分布。
 - **实验覆盖：** world 目录与数据获取能力有限；注册身份并不能完整证明任意生成代码实现了文字所述的科学机制。

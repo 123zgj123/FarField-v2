@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 import zipfile
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -281,3 +281,78 @@ def parse_labeled_trace_source(retrieved: bytes, text: str = "") -> tuple[list[d
     validate_traces(traces)
     return traces, source_format
 
+
+def read_atif_release(root: Path, *, run: str) -> dict[str, Any]:
+    """Project an existing manifest-bound ATIF evaluation release for freeze.
+
+    No task runs here. Outcome labels are the released verifier results;
+    absent return codes remain absent. These bytes cannot identify the
+    causal effect of a harness patch or substitute for a fresh rollout.
+    """
+    root = Path(root).resolve()
+    if not re.fullmatch(r"run-[1-9]\d*", run):
+        raise TraceFormatError("invalid release run")
+    manifest_bytes = (root / "manifest.json").read_bytes()
+    entries = json.loads(manifest_bytes).get("files", [])
+    by_path = {row["path"]: row for row in entries}
+    consumed = []
+
+    def read(rel):
+        path = (root / rel).resolve()
+        if not path.is_relative_to(root) or rel not in by_path:
+            raise TraceFormatError("artifact is outside the release manifest")
+        raw = path.read_bytes()
+        expected = by_path[rel]
+        if hashlib.sha256(raw).hexdigest() != expected.get("sha256") or len(raw) != expected.get("bytes"):
+            raise TraceFormatError(f"source digest mismatch: {rel}")
+        consumed.append(dict(expected))
+        return json.loads(raw)
+
+    traces = []
+    for rel in sorted(by_path):
+        parts = PurePosixPath(rel).parts
+        if len(parts) != 5 or parts[:2] != (run, "tasks") or parts[-2:] != ("agent", "trajectory.json"):
+            continue
+        task = parts[2]
+        trajectory = read(rel)
+        result = read(f"{run}/tasks/{task}/result.json")
+        reward = _as_dict(_as_dict(result.get("verifier_result")).get("rewards")).get("reward")
+        exception = _as_dict(result.get("exception_info"))
+        if reward is None and exception.get("exception_type"):
+            label = "error"
+        elif isinstance(reward, bool) or not isinstance(reward, (int, float)) or reward not in (0, 1):
+            raise TraceFormatError(f"missing or non-binary verifier reward: {task}")
+        else:
+            label = "resolved" if reward == 1 else "unresolved"
+        if result.get("task_name") != task:
+            raise TraceFormatError(f"task identity mismatch: {task}")
+        steps = []
+        for step in trajectory.get("steps", []):
+            if step.get("source") != "agent":
+                continue
+            message = step.get("message", "")
+            action = message if isinstance(message, str) else json.dumps(message, ensure_ascii=False)
+            observation = step.get("observation") or {}
+            output = json.dumps(observation, ensure_ascii=False, sort_keys=True)
+            steps.append({"t": len(steps), "action": _excerpt(action, _ACTION_LIMIT),
+                          "action_chars": len(action), "action_sha256": _digest(action),
+                          "action_truncated": len(action) > _ACTION_LIMIT,
+                          "returncode": None,
+                          "output_excerpt": _excerpt(output, _OUTPUT_LIMIT),
+                          "output_chars": len(output), "output_sha256": _digest(output),
+                          "output_truncated": len(output) > _OUTPUT_LIMIT,
+                          "source_step_id": step.get("step_id"),
+                          "source_metrics": step.get("metrics") or {}})
+        traces.append({"id": f"{run}/{task}", "task_id": task,
+                       "label": label, "steps": steps,
+                       "source_member": rel, "source_verifier_result": result["verifier_result"],
+                       "source_exception_info": result.get("exception_info"),
+                       "source_metrics": trajectory.get("final_metrics") or {}})
+    validate_traces(traces)
+    return {"traces": traces, "source_files": consumed,
+            "source_root": str(root), "run": run,
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "projection": "atif_agent_steps_and_released_verifier_v1",
+            "scope": "observational_trace_analysis_only",
+            "prohibited_inferences": ["counterfactual_harness_success", "causal_patch_effect",
+                                      "independent_replication", "new_heldout_performance"]}

@@ -29,16 +29,7 @@ SNAPSHOT_DIR = "evidence_snapshot"
 
 
 def _work(row: dict[str, Any]) -> FreshWork:
-    return FreshWork(
-        title=str(row.get("title") or ""),
-        published=str(row.get("published") or ""),
-        arxiv_id=str(row.get("arxiv_id") or ""),
-        abstract=str(row.get("abstract") or ""),
-        source=str(row.get("source") or "arxiv"),
-        work_id=str(row.get("work_id") or ""),
-        url=str(row.get("url") or ""),
-        venue=str(row.get("venue") or ""),
-    )
+    return FreshWork.from_dict(row)
 
 
 def _serialize(result: Any) -> dict[str, Any]:
@@ -114,6 +105,11 @@ class RecordingFeed:
             "recent_in_field", {"concepts": list(concepts)}, result
         )
 
+    def read_work(self, work: FreshWork):
+        reader = getattr(self.inner, "read_work", None)
+        result = reader(work) if callable(reader) else FeedBlocked(work.cite_id(), "no full-text reader")
+        return self._record("read_work", {"cite_id": work.cite_id()}, result)
+
     def pair_recently_combined(self, concept_a, concept_b, *, max_results: int = 5):
         result = self.inner.pair_recently_combined(
             concept_a, concept_b, max_results=max_results
@@ -184,6 +180,9 @@ class ReplayFeed:
 
     def recent_in_field(self, concepts, *, max_results: int = 6):
         return self._find("recent_in_field", {"concepts": list(concepts)})
+
+    def read_work(self, work: FreshWork):
+        return self._find("read_work", {"cite_id": work.cite_id()})
 
     def pair_recently_combined(self, concept_a, concept_b, *, max_results: int = 5):
         return self._find(

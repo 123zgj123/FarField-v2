@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-09-09 — Research project management
+
+The runtime could already produce hypotheses, run experiments and verify
+evidence. This round addresses the difference between doing research operations
+and managing a research project: knowing which question is worth answering,
+whether the current answer is good enough, when a design has to be redesigned
+rather than rerun, when a direction should be abandoned, and what the run is
+allowed to spend.
+
+- `ResearchContract` gives a project a root question that outlives any single
+  hypothesis, lineage, world or design. It is immutable inside a project: a
+  rewrite is refused by the reducer and recorded. Questions carry a root
+  alignment — aligned, instrumental, or drifted — and drift becomes debt that
+  blocks readiness. The alignment check is a lexical anchor guard, not semantic
+  understanding; it asks for a justification rather than accepting silently.
+- `ResearchQualityState` records twelve ordinal dimensions derived from admitted
+  evidence and recorded reviews. There is no fabricated acceptance probability.
+  A worker cannot write its own rating; it produces evidence or an objection and
+  the projection follows. Novelty and importance move only on a recorded
+  judgment, capped at `partial` unless that judgment cites literature the state
+  verified, and an open objection outranks any assessment.
+- REVIEW, REDESIGN and PROJECT_PIVOT are first-class actions with deterministic
+  default executors, so the control loop is exercisable offline. Review is a
+  planning signal that opens repair debt and lowers quality; it never raises
+  belief. A `DesignRevision` names the failure root cause, the invalidated
+  assumption, the repairs rejected, what is preserved and what changes, and its
+  own early-kill condition. A pivot preserves WORLD evidence, the contract,
+  contradictions and compact failure lessons, and drops the speculative chain
+  that produced the retired direction.
+- An objection requiring new evidence cannot be closed by prose. A rewrite, a
+  narrowed claim, another caveat or a new discussion section is refused; the
+  objection stays open and the refusal is counted.
+- Progress separates activity, operational progress, epistemic progress and
+  research progress, on two clocks. Strategic stagnation fires while every tick
+  still succeeds, when the central question is no better supported, the major
+  objections are no fewer and the quality gap has not shrunk.
+- Resource accounting is derived from `measured_cost` already on admitted
+  events, so the budget filter refuses something for the first time; both metric
+  keys it used to read were never written by anything.
+- Termination distinguishes seven outcomes. A finished loop, an empty frontier,
+  a generated paper and an exhausted budget are each reported as themselves and
+  none of them means the research is ready.
+- The scheduler gains a research-decision layer over the existing heuristic:
+  central-question value, objection repair, quality gap, redesign exhaustion,
+  resource discipline, goal drift, a block on gathering more of the same while
+  a fatal objection stands, and a penalty for currently inert action types. It
+  is inert without recorded project state, so legacy runs schedule unchanged. A
+  refused action returns its reason instead of vanishing from the menu.
+- Worker context is the derived decision journal rather than the accumulated
+  trajectory, and experiments carry outcome contingencies in branches. No branch
+  carries a probability, because nothing here is a calibrated predictor. The
+  projection computed for every action was previously read by no worker at all.
+- Action retry derives from each action's declared `ActionSpec.reads` instead of
+  a hash of the whole state, and an action that has twice returned the same
+  outcome while admitting nothing is not offered again. `REFLECT` and `ARCHIVE`
+  emitted no events and could not change state; reflection now records reusable
+  failure lessons with their applicability and raises an anomaly on a repeated
+  failure signature, and archiving records what it closed.
+- Capability-level behavioural scenarios and long-horizon trajectory evaluation
+  are part of the suite. See `ITERATION_REPORT.md` for the round-by-round record
+  and `VALIDATION.md` for scope and limits. This layer is offline validated
+  only: no live model or live world run exercised it.
+
 ## 2026-09-08 — ScientificState research workers and policy admission
 
 - Refresh the English and Chinese project introductions, document actual CLI

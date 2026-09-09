@@ -29,8 +29,15 @@ MAINTENANCE_ACTIONS = frozenset(
         "EVOLVE_HARNESS",
         "SYNTHESIZE",
         "FORK_LINEAGE",
+        # Project-level actions act on the project, not on one frontier node, so
+        # they are not gated by the frontier-reachability check.
+        "REVIEW",
+        "REDESIGN",
+        "PROJECT_PIVOT",
     }
 )
+
+PROJECT_ACTIONS = frozenset({"REVIEW", "REDESIGN", "PROJECT_PIVOT"})
 
 
 def _ids(rows: list[Mapping[str, Any]] | list[dict[str, Any]], key: str = "id") -> list[str]:

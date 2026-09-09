@@ -26,6 +26,12 @@ SYNTHESIZE = "SYNTHESIZE"
 ARCHIVE = "ARCHIVE"
 FORK_LINEAGE = "FORK_LINEAGE"
 EVOLVE_HARNESS = "EVOLVE_HARNESS"
+# Project-level research control. SURVEY..SYNTHESIZE ask "what do we do with
+# this question?". These three ask "is this project any good, and if not, what
+# has to change?" — which is the decision a long-horizon agent actually faces.
+REVIEW = "REVIEW"
+REDESIGN = "REDESIGN"
+PROJECT_PIVOT = "PROJECT_PIVOT"
 
 ACTION_TYPES = (
     SURVEY,
@@ -40,6 +46,9 @@ ACTION_TYPES = (
     ARCHIVE,
     FORK_LINEAGE,
     EVOLVE_HARNESS,
+    REVIEW,
+    REDESIGN,
+    PROJECT_PIVOT,
 )
 
 
@@ -254,6 +263,47 @@ SPECS: dict[str, ActionSpec] = {
         state_effect="harness_version_if_admitted",
         evidence_effect="none",
     ),
+    REVIEW: ActionSpec(
+        REVIEW,
+        preconditions=("reviewable_claim_or_design",),
+        required_capabilities=(),
+        reads=("evidence_records", "quality_state", "research_contract"),
+        possible_outputs=("review_records",),
+        executor="review_executor",
+        validator="structured_objection_schema",
+        estimated_cost=0.3,
+        risk="low",
+        state_effect="record_review_debt",
+        # A reviewer's agreement is not measurement. Review changes the plan; it
+        # never changes what the world was observed to do.
+        evidence_effect="none",
+    ),
+    REDESIGN: ActionSpec(
+        REDESIGN,
+        preconditions=("unresolved_objection_or_failed_design",),
+        required_capabilities=(),
+        reads=("reviews", "failed_designs", "quality_state"),
+        possible_outputs=("design_revision",),
+        executor="redesign_executor",
+        validator="revision_addresses_root_cause",
+        estimated_cost=0.4,
+        risk="medium",
+        state_effect="open_design_revision",
+        evidence_effect="none",
+    ),
+    PROJECT_PIVOT: ActionSpec(
+        PROJECT_PIVOT,
+        preconditions=("direction_not_worth_continuing", "budget_headroom"),
+        required_capabilities=(),
+        reads=("research_contract", "quality_state", "resources", "reviews"),
+        possible_outputs=("clean_restart_projection",),
+        executor="pivot_executor",
+        validator="preserves_world_evidence_and_contract",
+        estimated_cost=0.5,
+        risk="high",
+        state_effect="retire_lineage_and_restart_from_contract",
+        evidence_effect="none",
+    ),
 }
 
 
@@ -337,6 +387,7 @@ def eligible_actions(
     stagnation: bool = False,
     probe_ready: Mapping[str, Any] | None = None,
     workers_connected: bool = False,
+    strategic_stagnation: Any = None,
 ) -> list[ActionInstance]:
     """Deterministic eligibility. Not a pipeline stage list."""
     caps = tuple(str(item) for item in capabilities) + tuple(state.available_capabilities)
@@ -478,12 +529,24 @@ def eligible_actions(
         found.append(ActionInstance(SPECS[ARCHIVE], reason="closed_or_negative_result"))
 
     if stagnation and len(state.active_lineages) < 4:
-        found.append(
-            ActionInstance(
-                SPECS[FORK_LINEAGE],
-                reason="stagnation_or_diversity",
+        from .executors import fork_candidates
+
+        # A fork with nothing distinct to branch on is a wasted tick that then
+        # blocks the next real fork. Only offer it when lanes exist.
+        candidates = fork_candidates(state)
+        # Diversifying is only worth a tick when the lanes are not already on
+        # the menu. If every lane's next action is directly available, forking
+        # renames work the controller can simply do.
+        offered = {item.action_type for item in found}
+        if len(candidates) >= 2 and not all(
+                str(row.get("next_action") or "") in offered for row in candidates):
+            found.append(
+                ActionInstance(
+                    SPECS[FORK_LINEAGE],
+                    reason="stagnation_or_diversity",
+                    extra={"fork_candidates": candidates},
+                )
             )
-        )
 
     if pathology_ready:
         found.append(
@@ -493,8 +556,254 @@ def eligible_actions(
             )
         )
 
+    found.extend(project_actions(state, strategic_stagnation=strategic_stagnation))
+
     if workers_connected:
         found = worker_actions(state, found)
+    # An action that provably cannot inform anything is not eligible. Spending a
+    # tick to leave the state exactly as it was is a resource decision, and the
+    # honest place to make it is here, before the action is ever offered.
+    return [item for item in found if not information_precondition(state, item)]
+
+
+def _open_reviews(state: ScientificState, severity: str = "") -> list[dict[str, Any]]:
+    from .quality import open_reviews
+
+    return open_reviews(state.reviews, severity=severity)
+
+
+def _reviewable(state: ScientificState) -> bool:
+    """Is there anything a reviewer could hold an opinion about yet?"""
+    if any(row.get("role") == "ProbeEvidence" for row in state.evidence_records):
+        return True
+    if any(row.get("kind") == "research_synthesis" for row in state.artifacts):
+        return True
+    return bool(state.theories and any(
+        row.get("kind") == "literature_survey" and row.get("works") for row in state.artifacts))
+
+
+def _redesign_demands(state: ScientificState) -> list[dict[str, Any]]:
+    """Objections and quality gaps that a rerun of the same design cannot fix.
+
+    A redesign needs a design. After a pivot the previous epoch's evidence still
+    leaves quality dimensions short — correctly, that evidence is preserved —
+    but there is nothing in the new epoch to revise, and the honest next step is
+    to build a design, not to revise one that was retired.
+    """
+    from .quality import REDESIGN_REPAIRS
+
+    epoch = int(state.project_epoch)
+    live_designs = [row for row in state.theories
+                    if row.get("status") != "retired"
+                    and row.get("role") != "competing_explanation"]
+    demands: list[dict[str, Any]] = []
+    addressed = {
+        str(rid)
+        for revision in state.design_revisions
+        if int(revision.get("project_epoch") or 0) == epoch
+        for rid in revision.get("addresses_reviews") or []
+    }
+    for review in _open_reviews(state):
+        repair = str(review.get("repair_type") or "")
+        if repair not in REDESIGN_REPAIRS and repair != "stronger_baseline":
+            continue
+        if int(review.get("project_epoch") or 0) != epoch:
+            continue  # an objection against a retired direction is history
+        if str(review.get("review_id") or "") in addressed:
+            continue
+        demands.append({
+            "kind": "review", "review_id": review.get("review_id"),
+            "repair_type": repair, "dimension": review.get("dimension"),
+            "objection": review.get("objection"), "theory_id": review.get("theory_id"),
+            "question_id": review.get("question_id"), "severity": review.get("severity"),
+        })
+    dimensions = (state.quality or {}).get("dimensions") or {}
+    for name, row in sorted(dimensions.items()):
+        if not live_designs:
+            break  # nothing to revise; the frontier owns this gap
+        if "REDESIGN" not in (row.get("required_next_work") or []):
+            continue
+        if any(item.get("dimension") == name for item in demands):
+            continue
+        if any(str(revision.get("dimension") or "") == name
+               and int(revision.get("project_epoch") or 0) == int(state.project_epoch)
+               for revision in state.design_revisions):
+            continue
+        demands.append({
+            "kind": "quality_gap", "dimension": name, "severity": "major",
+            "repair_type": "experiment_redesign",
+            "objection": "; ".join(row.get("blocking_reasons") or []) or f"{name}_below_contract",
+        })
+    return demands
+
+
+def _pivot_trigger(state: ScientificState, *, strategic_stagnation: Any = None) -> dict[str, Any] | None:
+    """When is the honest move to stop repairing and change direction?
+
+    Not "the experiment failed" — that is REDESIGN. This is the case where even
+    a successful next experiment would not make the project worth finishing:
+    the direction carries an unrepairable objection, its redesigns are spent, or
+    the whole hypothesis set has drifted off the contract's root question.
+    """
+    from .quality import PIVOT_REPAIRS
+    from .resources import budget_phase
+
+    epoch = int(state.project_epoch)
+    # A direction cannot be abandoned before it has been tried. After a pivot the
+    # fresh epoch has to do real work before it may be abandoned in turn,
+    # otherwise the controller can pivot forever without researching anything.
+    epoch_work = [row for row in state.artifacts
+                  if row.get("kind") == "action_attempt"
+                  and str(row.get("action_type") or "") in {"PROBE", "VERIFY", "OBSERVE"}
+                  and int(row.get("project_epoch") or 0) == epoch]
+    if epoch and not epoch_work:
+        return None
+
+    demanded = [r for r in _open_reviews(state)
+                if str(r.get("repair_type") or "") in PIVOT_REPAIRS
+                and int(r.get("project_epoch") or 0) == epoch]
+    if demanded:
+        return {"reason": "reviewer_demanded_project_pivot",
+                "review_ids": [r.get("review_id") for r in demanded]}
+
+    # Opening a new direction costs a full research arc. With the budget nearly
+    # gone that is not courage, it is guaranteeing two unfinished projects.
+    phase = budget_phase(state)
+    if phase in {"closing", "exhausted"}:
+        return None
+
+    revisions = [r for r in state.design_revisions if int(r.get("project_epoch") or 0) == epoch]
+    fatal = _open_reviews(state, severity="fatal")
+    quality = state.quality or {}
+    central = ((quality.get("dimensions") or {}).get("central_claim_support") or {})
+    exhausted = len(revisions) >= 2 and all(
+        str(r.get("outcome") or "open") != "resolved" for r in revisions)
+
+    if fatal and exhausted:
+        return {"reason": "fatal_objection_survived_the_available_redesigns",
+                "review_ids": [r.get("review_id") for r in fatal],
+                "revisions_tried": len(revisions)}
+    if "PROJECT_PIVOT" in (central.get("required_next_work") or []):
+        return {"reason": "no_active_hypothesis_still_serves_the_root_question",
+                "blocking_reasons": list(central.get("blocking_reasons") or [])}
+    if strategic_stagnation is not None and exhausted:
+        reasons = list(getattr(strategic_stagnation, "reasons", ()) or [])
+        return {"reason": "strategic_stagnation_after_exhausted_redesign", "detail": reasons}
+    return None
+
+
+def information_precondition(state: ScientificState, action: ActionInstance) -> str:
+    """Could this action tell the project anything it does not already know?
+
+    A value precondition, not a score. Some actions always "succeed" and
+    routinely change nothing — REFLECT with no unexamined failure, ARCHIVE with
+    nothing newly closed, REVIEW over evidence every objection already covers.
+    Offering them costs a tick and a call and returns the state unchanged, so
+    they are refused at the eligibility layer where preconditions belong.
+
+    Returns a refusal reason, or "" when the action can still inform something.
+    """
+    kind = action.action_type
+    attempts = [row for row in state.artifacts if row.get("kind") == "action_attempt"]
+
+    # The general rule, before any per-action one. If this exact action on this
+    # exact target has already come back twice with the same outcome and
+    # admitted nothing, the project has learned that fact. Running it a third
+    # time is not an experiment, it is a re-read of a known answer — and this
+    # holds even when unrelated parts of the state have moved on.
+    inert = [row for row in attempts
+             if str(row.get("action_type") or "") == kind
+             and str(row.get("target") or "") == str(action.target or "")
+             and int(row.get("project_epoch") or 0) == int(state.project_epoch)
+             and not int(row.get("events_admitted") or 0)]
+    outcomes = [str(row.get("outcome_key") or "") for row in inert]
+    for outcome in set(outcomes):
+        if outcome and outcomes.count(outcome) >= 2:
+            return f"already_established_that_this_returns_{outcome}"
+
+    if kind == REFLECT:
+        # Reflection needs an unexamined failure to reflect on.
+        if not state.failed_designs and not state.anomalies:
+            return "nothing_has_failed_yet"
+        known = {str(row.get("signature") or "") for row in state.artifacts
+                 if row.get("kind") == "failure_lesson"}
+        signatures = {"|".join(str(row.get(key) or "") for key in
+                               ("action_type", "theory_id", "reason"))
+                      for row in state.failed_designs}
+        if signatures and signatures <= known:
+            return "every_recorded_failure_already_has_a_lesson"
+
+    if kind == ARCHIVE:
+        closed = sorted(str(row.get("id") or "") for row in state.resolved_questions)
+        failed = sorted({"|".join(str(row.get(key) or "") for key in ("action_type", "theory_id"))
+                         for row in state.failed_designs})
+        if not (closed or failed):
+            return "nothing_is_closed_to_archive"
+        previous = next((row for row in reversed(state.artifacts)
+                         if row.get("kind") == "archive_record"), {})
+        if (list(previous.get("closed_questions") or []) == closed
+                and list(previous.get("closed_designs") or []) == failed):
+            return "the_archive_already_records_this_set"
+
+    if kind == REVIEW:
+        # Review is informative only where an objection does not already stand.
+        covered = {str(row.get("affected_design") or "") for row in state.reviews}
+        designs = {str(row.get("evidence_id") or "") for row in state.evidence_records
+                   if str(row.get("role") or "") == "ProbeEvidence"}
+        theories_reviewed = {str(row.get("theory_id") or "") for row in state.reviews}
+        live = {str(row.get("id") or "") for row in state.theories
+                if row.get("status") != "retired" and row.get("role") != "competing_explanation"}
+        if designs and designs <= covered and live <= theories_reviewed:
+            return "every_design_and_hypothesis_already_carries_a_review"
+
+    if kind == SYNTHESIZE:
+        gap = list((state.quality or {}).get("quality_gap") or [])
+        drafted = {str(row.get("evidence_id") or "") for row in state.artifacts
+                   if row.get("kind") == "research_synthesis"}
+        measured = {str(row.get("evidence_id") or "") for row in state.evidence_records
+                    if str(row.get("role") or "") == "ProbeEvidence"}
+        if gap and measured and measured <= drafted:
+            return "a_redraft_does_not_close_an_open_evidence_gap"
+
+    return ""
+
+
+def project_actions(
+    state: ScientificState, *, strategic_stagnation: Any = None
+) -> list[ActionInstance]:
+    """REVIEW / REDESIGN / PROJECT_PIVOT eligibility from canonical state."""
+    found: list[ActionInstance] = []
+    if _reviewable(state):
+        found.append(
+            ActionInstance(
+                SPECS[REVIEW],
+                target=str(state.goal or ""),
+                reason="reviewable_claim_or_design",
+                frontier_target_id="goal:G0" if state.goal else "",
+                extra={"project_epoch": int(state.project_epoch)},
+            )
+        )
+    for demand in _redesign_demands(state):
+        found.append(
+            ActionInstance(
+                SPECS[REDESIGN],
+                target=str(demand.get("theory_id") or demand.get("dimension") or ""),
+                reason=f"unresolved_{demand.get('kind')}",
+                frontier_target_id=str(demand.get("question_id") or "goal:G0"),
+                extra={"demand": demand, "project_epoch": int(state.project_epoch)},
+            )
+        )
+    trigger = _pivot_trigger(state, strategic_stagnation=strategic_stagnation)
+    if trigger is not None:
+        found.append(
+            ActionInstance(
+                SPECS[PROJECT_PIVOT],
+                target=str(state.goal or ""),
+                reason=str(trigger.get("reason") or "direction_not_worth_continuing"),
+                frontier_target_id="goal:G0" if state.goal else "",
+                extra={"trigger": trigger, "project_epoch": int(state.project_epoch)},
+            )
+        )
     return found
 
 
@@ -562,7 +871,11 @@ def worker_actions(state: ScientificState, actions: list[ActionInstance]) -> lis
                         "causal_handle": card.get("world_lever") or theory.get("mechanism"),
                         "measure": card.get("world_observable") or card.get("prediction"),
                         "freeze": state.world_id,
-                        "experiment_proposal": theory.get("experiment_proposal"),
+                        # Only attach a proposal when one exists: an absent
+                        # proposal is a plain probe, a null one is a filter that
+                        # silently removes every experiment from the menu.
+                        **({"experiment_proposal": theory["experiment_proposal"]}
+                           if isinstance(theory.get("experiment_proposal"), dict) else {}),
                     }))
             if measured:
                 found.append(ActionInstance(SPECS[SYNTHESIZE], target=tid, frontier_target_id=qid,
@@ -587,18 +900,92 @@ def worker_actions(state: ScientificState, actions: list[ActionInstance]) -> lis
     return unattempted_actions(state, found)
 
 
+def _read_slice(state: ScientificState, name: str, action: ActionInstance) -> Any:
+    """The part of the state one declared ``ActionSpec.reads`` entry refers to.
+
+    Deliberately narrow. An action whose declared inputs have not changed will
+    produce the same result it produced last time, so it must not be offered
+    again — and an action whose inputs *have* changed must be.
+    """
+    if name == "literature":
+        return [r.get("id") for r in state.artifacts if r.get("kind") == "literature_survey"]
+    if name in {"scientific_archive", "evidence_records"}:
+        return [(r.get("evidence_id"), r.get("verify_count"), r.get("outcome"))
+                for r in state.evidence_records]
+    if name in {"world_version", "world_lineage", "world_id"}:
+        return [(r.get("id") or r.get("world_id"), r.get("digest"), r.get("role"))
+                for r in state.world_versions] + [state.world_id]
+    if name in {"capability_registry",}:
+        return sorted(state.available_capabilities)
+    if name == "missing_capabilities":
+        return sorted(state.missing_capabilities)
+    if name == "open_questions":
+        return [(r.get("id"), r.get("status")) for r in
+                state.open_questions + state.blocked_questions + state.resolved_questions]
+    if name in {"failure_archive", "failed_designs"}:
+        return [(r.get("action_type"), r.get("theory_id"), r.get("reason"))
+                for r in state.failed_designs]
+    if name == "working_memory":
+        # What an archiving or reflecting action would have to work on.
+        return {"closed": [r.get("id") for r in state.resolved_questions],
+                "failures": len(state.failed_designs),
+                "anomalies": list(state.anomalies)}
+    if name == "evidence_id":
+        target = next((r for r in state.evidence_records
+                       if str(r.get("evidence_id") or "") == str(action.target or "")), {})
+        return (target.get("evidence_id"), target.get("verify_count"),
+                target.get("reproduction_ok"), target.get("replication_of"),
+                action.extra.get("replication_world_id"))
+    if name in {"harness_probe_executor", "harness_version", "harness_archive"}:
+        return state.harness_version
+    if name == "reviews":
+        return [(r.get("review_id"), r.get("status"), r.get("severity")) for r in state.reviews]
+    if name == "quality_state":
+        return {"gap": sorted((state.quality or {}).get("quality_gap") or []),
+                "statuses": {k: v.get("status") for k, v in
+                             sorted(((state.quality or {}).get("dimensions") or {}).items())}}
+    if name == "research_contract":
+        return (state.contract or {}).get("root_question", "")
+    if name == "resources":
+        return (state.resources or {}).get("exhausted")
+    if name == "scientific_state":
+        # Only for actions that genuinely branch on the whole project shape.
+        return {"questions": [r.get("id") for r in state.open_questions],
+                "theories": [(r.get("id"), r.get("status")) for r in state.theories],
+                "capabilities": sorted(state.missing_capabilities)}
+    return name
+
+
 def action_input_key(state: ScientificState, action: ActionInstance) -> str:
-    """A retry needs changed scientific inputs, not just a later clock tick."""
+    """A retry needs changed *declared inputs*, not just a later clock tick.
+
+    This used to hash the whole scientific state, which defeated its own
+    purpose: any unrelated change — one new evidence row, one new artifact —
+    made every previously-failed action look untried again, so a blocked
+    OBSERVE or an ACQUIRE with no recipe was rescheduled indefinitely. The key
+    is now built from ``ActionSpec.reads``, the inputs the action itself
+    declares. If a spec under-declares its inputs that is a spec to fix, not a
+    reason to hash the world.
+    """
     import hashlib
     import json
-    inputs = {"goal": state.goal, "worlds": state.world_versions,
-              "evidence": [(r.get("evidence_id"), r.get("verify_count")) for r in state.evidence_records],
-              "theories": [r.get("id") for r in state.theories],
-              "surveys": [r.get("id") for r in state.artifacts if r.get("kind") == "literature_survey"],
-              "capabilities": state.available_capabilities,
-              "service_session": next((r.get("id") for r in reversed(state.artifacts) if r.get("kind") == "research_service_session"), ""),
-              "action": action.action_type, "target": action.target,
-              "branch": {k: action.extra.get(k) for k in ("research_lane", "parent_theory_id", "hop", "theory_id", "replication_world_id")}}
+
+    inputs = {
+        "action": action.action_type,
+        "target": action.target,
+        "reads": {name: _read_slice(state, name, action)
+                  for name in sorted(action.spec.reads)},
+        "branch": {k: action.extra.get(k) for k in
+                   ("research_lane", "parent_theory_id", "hop", "theory_id",
+                    "replication_world_id")},
+        "project": {
+            "epoch": state.project_epoch,
+            "demand": (action.extra.get("demand") or {}).get("review_id")
+                      or (action.extra.get("demand") or {}).get("dimension") or "",
+            "lanes": sorted(str(row.get("lane") or "")
+                            for row in action.extra.get("fork_candidates") or []),
+        },
+    }
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, default=str).encode()).hexdigest()
 
 

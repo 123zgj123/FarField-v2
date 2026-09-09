@@ -87,7 +87,12 @@ def refresh_research_views(state: "ScientificState") -> None:
         theory["prior_confidence"] = belief["prior_confidence"]
         theory["posterior_confidence"] = belief["posterior_confidence"]
         theory["belief_state_id"] = tid
-        if belief["contradicting_evidence"]:
+        # A retired hypothesis stays retired. Its evidence is still real and
+        # still counted, but belief refresh must not resurrect a direction the
+        # project deliberately abandoned.
+        if str(theory.get("status") or "") == "retired":
+            pass
+        elif belief["contradicting_evidence"]:
             theory["status"] = "weakened"
         elif belief["supporting_evidence"]:
             theory["status"] = "supported"
@@ -168,6 +173,8 @@ class ScientificState:
     world_id: str = ""
     ticks: int = 0
     last_progress_tick: int = 0
+    # Operational idleness and research stagnation are different clocks.
+    last_research_progress_tick: int = 0
     event_seq: int = 0
     metrics: dict[str, Any] = field(default_factory=dict)
     frontier: dict[str, Any] = field(default_factory=dict)
@@ -176,6 +183,16 @@ class ScientificState:
     belief_states: dict[str, dict[str, Any]] = field(default_factory=dict)
     speculative_frontier: list[str] = field(default_factory=list)
     verified_research_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Project-level control state. A goal string survives one action; these
+    # survive a hundred. All of them are event-sourced and replay-derived.
+    contract: dict[str, Any] = field(default_factory=dict)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+    quality: dict[str, Any] = field(default_factory=dict)
+    resources: dict[str, Any] = field(default_factory=dict)
+    design_revisions: list[dict[str, Any]] = field(default_factory=list)
+    retired_lineages: list[dict[str, Any]] = field(default_factory=list)
+    decision_journal: list[dict[str, Any]] = field(default_factory=list)
+    project_epoch: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -202,6 +219,7 @@ class ScientificState:
             "world_id": self.world_id,
             "ticks": self.ticks,
             "last_progress_tick": self.last_progress_tick,
+            "last_research_progress_tick": self.last_research_progress_tick,
             "event_seq": self.event_seq,
             "metrics": dict(self.metrics),
             "frontier": dict(self.frontier),
@@ -210,6 +228,14 @@ class ScientificState:
             "belief_states": dict(self.belief_states),
             "speculative_frontier": list(self.speculative_frontier),
             "verified_research_state": dict(self.verified_research_state),
+            "contract": dict(self.contract),
+            "reviews": list(self.reviews),
+            "quality": dict(self.quality),
+            "resources": dict(self.resources),
+            "design_revisions": list(self.design_revisions),
+            "retired_lineages": list(self.retired_lineages),
+            "decision_journal": list(self.decision_journal),
+            "project_epoch": self.project_epoch,
         }
 
     def view(self) -> Mapping[str, Any]:
@@ -243,6 +269,7 @@ class ScientificState:
             world_id=str(row.get("world_id") or ""),
             ticks=int(row.get("ticks") or 0),
             last_progress_tick=int(row.get("last_progress_tick") or 0),
+            last_research_progress_tick=int(row.get("last_research_progress_tick") or 0),
             event_seq=int(row.get("event_seq") or 0),
             metrics=dict(row.get("metrics") or {}),
             frontier=dict(row.get("frontier") or {}),
@@ -251,6 +278,14 @@ class ScientificState:
             belief_states=dict(row.get("belief_states") or {}),
             speculative_frontier=_copy_text(row.get("speculative_frontier")),
             verified_research_state=dict(row.get("verified_research_state") or {}),
+            contract=dict(row.get("contract") or {}),
+            reviews=_copy_rows(row.get("reviews")),
+            quality=dict(row.get("quality") or {}),
+            resources=dict(row.get("resources") or {}),
+            design_revisions=_copy_rows(row.get("design_revisions")),
+            retired_lineages=_copy_rows(row.get("retired_lineages")),
+            decision_journal=_copy_rows(row.get("decision_journal")),
+            project_epoch=int(row.get("project_epoch") or 0),
         )
 
     def add_question(
@@ -396,6 +431,7 @@ def state_is_empty(state: ScientificState) -> bool:
         or state.evidence_records
         or state.world_id
         or state.theories
+        or state.contract
     )
 
 

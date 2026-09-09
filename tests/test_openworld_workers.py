@@ -193,6 +193,24 @@ class WorkerTests(unittest.TestCase):
         self.state.evidence_records.append(result.evidence)
         return result.evidence
 
+    def test_observational_archive_cannot_corroborate_a_harness_intervention(self):
+        from farfield.extras.world import WorldFixture
+        from farfield.extras.diagnose import diagnosis_from_payload
+        from types import SimpleNamespace
+        root = self.workspace / 'restricted'
+        root.mkdir()
+        (root / 'world.json').write_text(json.dumps({
+            'research_scope': 'observational_trace_analysis_only'}))
+        world = WorldFixture('restricted', 'archive', 'source', '2026-01-01', 'digest',
+                             ('world.json',), root)
+        row = self.theory()
+        from farfield.extras.openworld.workers import _card
+        gate = self.worker()._gates(_card(row['card']), diagnosis_from_payload(row['id'], DIAGNOSIS),
+            SimpleNamespace(source=SOURCE), SimpleNamespace(treatment=1, control=2),
+            world, self.workspace, 'cpu')
+        self.assertTrue(gate.get('cannot_corroborate'))
+        self.assertIn('observational_archive_not_live_harness_execution', gate['validation_gaps'])
+
     def test_host_reproduces_same_identity_without_claiming_independent_replication(self):
         evidence = self.executed()
         result = self.worker().executors()["VERIFY"](

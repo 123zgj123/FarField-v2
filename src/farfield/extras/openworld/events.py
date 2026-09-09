@@ -41,6 +41,17 @@ EVENT_TYPES = (
     "TickAdvanced",
     "ArtifactAdded",
     "GoalSet",
+    # Project-level control. These change what the project *is*, not only what
+    # it currently knows.
+    "ContractSet",
+    "ContractAmended",
+    "ReviewRecorded",
+    "ReviewResolved",
+    "ReviewRepairRefused",
+    "DesignRevised",
+    "LineageRetired",
+    "ProjectPivoted",
+    "DecisionRecorded",
 )
 
 MEANINGFUL_EVENTS = frozenset(
@@ -59,6 +70,12 @@ MEANINGFUL_EVENTS = frozenset(
         "HarnessAdmitted",
         "ContradictionDetected",
         "FrontierChanged",
+        # Recognising that a design is wrong, or that a direction is not worth
+        # continuing, is research progress. Repeating a broken design is not.
+        "ReviewRecorded",
+        "ReviewResolved",
+        "DesignRevised",
+        "ProjectPivoted",
     }
 )
 

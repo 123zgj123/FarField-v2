@@ -35,6 +35,30 @@ class InnerFeed:
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_full_text_read_is_replayed_without_a_live_reader(self):
+        document = {"arxiv_id": WORK.arxiv_id, "references": ["2408.08435"],
+                    "full_text_spans": [{"text": "Exact source text", "verified": True}]}
+        class Reader:
+            def read_work(self, work):
+                return document
+        with tempfile.TemporaryDirectory() as tmp:
+            recording = RecordingFeed(Reader(), Path(tmp))
+            self.assertTrue(callable(getattr(recording, "read_work", None)))
+            recording.read_work(WORK)
+            replay = ReplayFeed(Path(tmp))
+            self.assertEqual(replay.read_work(WORK), document)
+            self.assertIsInstance(replay.read_work(WORK), FeedBlocked)
+
+    def test_citation_lineage_survives_recording_and_replay(self):
+        class CitingFeed:
+            def recent_in_field(self, concepts, **kwargs):
+                return [FreshWork("Successor", "2026-01-01", arxiv_id="2601.12345",
+                                  references=("2408.08435", "doi:10.1234/prior"))]
+        with tempfile.TemporaryDirectory() as tmp:
+            RecordingFeed(CitingFeed(), Path(tmp)).recent_in_field(("agents",))
+            work = ReplayFeed(Path(tmp)).recent_in_field(("agents",))[0]
+            self.assertEqual(work.references, ("2408.08435", "doi:10.1234/prior"))
+
     def test_recorded_answers_replay_identically_without_the_inner_feed(self) -> None:
         inner = InnerFeed()
         with tempfile.TemporaryDirectory() as tmp:

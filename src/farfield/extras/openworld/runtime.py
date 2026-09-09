@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import OpenWorld
+from .contract import ResearchContract
 from .events import make_event
 from .executors import fixture_from_root
 from .worldio import bind_fixture
+from .journal import research_journal
 from .progress import should_terminate
 from .reducer import apply_events, rebuild_state, state_digest
+from .termination import BUDGET_EXHAUSTED, RUN_SEGMENT_DONE, readiness, run_outcome
 
 
 def _seed_world(workspace: Path, world_id: str = "W0", topic: str = "") -> Path:
@@ -31,12 +34,36 @@ def _seed_world(workspace: Path, world_id: str = "W0", topic: str = "") -> Path:
     return root
 
 
+def default_contract(topic: str, **limits: Any) -> ResearchContract:
+    """The contract a caller gets when they only supplied a topic string.
+
+    A topic is not a research project. Even the default has to name what would
+    count as success, what quality bar is being aimed at, and what the run is
+    allowed to spend — otherwise there is nothing for the controller to be
+    faithful to fifty actions later.
+    """
+    return ResearchContract.from_dict({
+        "root_question": topic,
+        "success_target": (
+            "admitted WORLD evidence that answers the root question within its "
+            "stated scope, surviving review"),
+        "target_quality": "internal",
+        "allowed_reframes": list(ResearchContract().allowed_reframes),
+        "resource_limits": {k: v for k, v in limits.items() if v},
+        "termination_requirements": [
+            "central_question_supported", "no_fatal_objections",
+            "evidence_scope_matches_claim", "no_unauthorized_goal_drift",
+        ],
+    })
+
+
 def bootstrap_research(
     topic: str,
     workspace: Path,
     *,
     world: Any = None,
     world_id: str = "",
+    contract: Any = None,
 ) -> OpenWorld:
     workspace = Path(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
@@ -56,6 +83,12 @@ def bootstrap_research(
             env.persist()
         return env
     env.state.goal = topic
+    if contract is None:
+        contract = default_contract(topic)
+    elif not isinstance(contract, ResearchContract):
+        contract = ResearchContract.from_dict(contract)
+    if contract.root_question and contract.root_question != topic:
+        raise ValueError("the research contract's root question must be the run topic")
     wid = str(world_id or getattr(world, "id", "") or "W0")
     if world is not None or world_id:
         fixture = bind_fixture(workspace, world, world_id)
@@ -102,6 +135,7 @@ def bootstrap_research(
         env.state,
         [
             make_event("GoalSet", {"goal": topic}),
+            make_event("ContractSet", contract.to_dict()),
             make_event(
                 "WorldCreated",
                 dict(env.state.world_versions[-1]),
@@ -144,13 +178,23 @@ def run_research(
     policy_evaluation: Any = None,
     policy_suite: dict[str, list[str]] | None = None,
     policy_evaluator: Any = None,
+    contract: Any = None,
     **_ignored: Any,
 ) -> Iterator[dict[str, Any]]:
     """One scientific controller; all research services are existing workers."""
     from ..llm import LLMClient, LLMUnavailable, TokenLedger, resolve_backend
     from .workers import LegacyResearchWorkers
 
-    env = bootstrap_research(topic, Path(workspace), world=world, world_id=str(world_id or ""))
+    if contract is None:
+        # The run's own budget is the project's budget. Without this the
+        # scheduler cannot tell an opening move from a closing one.
+        contract = default_contract(
+            topic,
+            api_calls=100.0 if api_calls is None else float(api_calls),
+            ticks=float(max(0, int(horizon))),
+        )
+    env = bootstrap_research(topic, Path(workspace), world=world,
+                             world_id=str(world_id or ""), contract=contract)
     client_gap = ""
     if client is None:
         try:
@@ -189,15 +233,35 @@ def run_research(
         "research_complete": False,
         "capability_note": client_gap or "Existing research workers connected; admission remains evidence-gated.",
     }
+    horizon_reached, no_action = True, False
     for _ in range(max(0, int(horizon))):
         reason = should_terminate(env.state, horizon=horizon) if stop_on_exhaust else None
         if reason and reason != "budget" and stop_on_exhaust:
-            yield {"stage": "terminate", "reason": reason, "ticks": env.state.ticks}
+            # A frontier reason stops the loop. It never settles the science, so
+            # the readiness verdict is reported alongside it.
+            verdict = readiness(env.state)
+            yield {"stage": "terminate", "reason": reason, "ticks": env.state.ticks,
+                   "research_status": verdict.status, "research_complete": verdict.ready,
+                   "failed_gates": list(verdict.failed_gates)}
+            horizon_reached = False
+            break
+        if env.state.resources.get("exhausted"):
+            verdict = readiness(env.state)
+            yield {"stage": "terminate", "reason": "budget_exhausted", "ticks": env.state.ticks,
+                   "research_status": BUDGET_EXHAUSTED, "research_complete": False,
+                   "failed_gates": list(verdict.failed_gates)}
+            horizon_reached = False
             break
         event = env.tick()
         yield event
         if event.get("scheduled") is None:
-            yield {"stage": "terminate", "reason": "no_executable_frontier_action", "ticks": env.state.ticks}
+            no_action = True
+            verdict = readiness(env.state, no_executable_action=True)
+            yield {"stage": "terminate", "reason": "no_executable_frontier_action",
+                   "ticks": env.state.ticks, "research_status": verdict.status,
+                   "research_complete": verdict.ready,
+                   "failed_gates": list(verdict.failed_gates)}
+            horizon_reached = False
             break
     if policy_log is not None and policy_file is not None:
         from ..routing import append_mission, load_log, maybe_update, _validated_outcome, PolicyError
@@ -230,9 +294,14 @@ def run_research(
         decision = maybe_update(Path(policy_log), Path(policy_file), evaluation=policy_evaluation)
         yield {"stage": "research_policy", **decision}
     rebuilt = rebuild_state(env.log)
+    verdict = readiness(env.state, no_executable_action=no_action)
     status_text = (
         "# Research status / 研究状态\n\n"
         f"Topic: {env.state.goal}\n\n"
+        f"Research status: {verdict.status} (ready={verdict.ready})\n\n"
+        f"Unmet gates: {list(verdict.failed_gates)}\n\n"
+        f"Quality gap: {list((env.state.quality or {}).get('quality_gap') or [])}\n\n"
+        f"Open objections: {[r.get('review_id') for r in env.state.reviews if r.get('status') == 'open']}\n\n"
         "Status: open research. Run completion is not scientific success. "
         "描述性观测不能确认原始假设；验证结论只适用于已测试条件。\n\n"
         "Next actions are selected from ScientificState; missing services or frozen "
@@ -250,10 +319,20 @@ def run_research(
         status_text += "\n## Exploratory observations / 探索性观测\n\n"
         status_text += "```json\n" + json.dumps(observations, ensure_ascii=False, indent=2) + "\n```\n"
     (Path(workspace) / "RESEARCH_STATUS.md").write_text(status_text, encoding="utf-8")
+    outcome = run_outcome(env.state, horizon_reached=horizon_reached,
+                          no_executable_action=no_action)
     yield {
         "stage": "done",
-        "status": "incomplete",
-        "research_complete": False,
+        "status": "ready" if outcome["research_complete"] else "incomplete",
+        "research_status": outcome["status"],
+        "research_complete": outcome["research_complete"],
+        "readiness": outcome,
+        "segment": outcome.get("segment", RUN_SEGMENT_DONE),
+        "decision_journal": research_journal(env.state),
+        "quality": dict(env.state.quality),
+        "resources": dict(env.state.resources),
+        "reviews": list(env.state.reviews),
+        "project_epoch": int(env.state.project_epoch),
         "output_kind": "scientific_runtime",
         "status_file": str(Path(workspace) / "RESEARCH_STATUS.md"),
         "controller": "OpenWorld",

@@ -19,6 +19,10 @@ from .actions import (
     ACQUIRE,
     ACTION_TYPES,
     ASK,
+    PROJECT_PIVOT,
+    REDESIGN,
+    REVIEW,
+    VERIFY,
     EVOLVE_HARNESS,
     FORK_LINEAGE,
     OBSERVE,
@@ -84,19 +88,24 @@ from .memory import (
     projection_token_count,
     save_archives,
 )
+from .contract import ResearchContract, contract_from_state, root_alignment
 from .progress import (
     LANES,
     fork_trajectories,
     judge_branches,
     maybe_stagnation,
+    maybe_strategic_stagnation,
     measure_progress,
     merge_branch,
     merge_branches,
     should_terminate,
     update_metrics,
 )
+from .quality import compute_quality, open_reviews, review_debt
+from .resources import budget_phase, budget_state
+from .restart import clean_restart_projection
 from .reducer import apply_events, rebuild_state, state_digest
-from .scheduler import ScoredAction, schedule, schedule_all
+from .scheduler import ScoredAction, admissible, schedule, schedule_all
 from .state import (
     SCIENTIFIC_STATE_FILE,
     ScientificState,
@@ -186,7 +195,9 @@ class OpenWorld:
             )
 
     def eligible(self, *, probe_ready: Mapping[str, Any] | None = None) -> list[ActionInstance]:
-        stagnant = maybe_stagnation(self.state) is not None
+        strategic = maybe_strategic_stagnation(self.state)
+        # A busy-but-stuck project should widen its options, not only an idle one.
+        stagnant = maybe_stagnation(self.state) is not None or strategic is not None
         return eligible_actions(
             self.state,
             capabilities=self.capabilities.names(),
@@ -194,6 +205,7 @@ class OpenWorld:
             stagnation=stagnant,
             probe_ready=probe_ready,
             workers_connected=self.workers_connected,
+            strategic_stagnation=strategic,
         )
 
     def schedule(self, actions: list[ActionInstance] | None = None) -> ScoredAction | None:
@@ -203,6 +215,16 @@ class OpenWorld:
         return chosen
 
     def project_for(self, action: ActionInstance) -> dict[str, Any]:
+        """The context this action should see — not the whole trajectory.
+
+        The projection carries the contract, the derived decision journal, the
+        evidence relevant to this action's target, the standing objections and
+        the remaining budget. After a pivot it carries the clean restart instead
+        of the retired direction's narrative, so an abandoned line cannot anchor
+        the work that replaces it.
+        """
+        from .journal import contingency_plan, research_journal
+
         overlay = project_harness(
             self.harness,
             action_type=action.action_type,
@@ -213,14 +235,35 @@ class OpenWorld:
             action_type=action.action_type,
             world_id=self.state.world_id,
         )
-        return {
+        theory_id = str(action.extra.get("theory_id") or action.target or "")
+        journal = research_journal(
+            self.state,
+            question_id=str(action.frontier_target_id or ""),
+            theory_id=theory_id,
+        )
+        payload = {
             "harness_lines": projection_lines(
                 self.harness, action_type=action.action_type, lineage_id=action.lineage_id
             ),
             "archive": archive,
             "archive_tokens": projection_token_count(archive),
             "overlay_names": [item.name for item in overlay],
+            "research_journal": journal,
+            "research_contract": journal["research_contract"],
+            "open_objections": journal["open_objections"],
+            "relevant_world_evidence": journal["relevant_world_evidence"],
+            "remaining_resources": journal["resources"],
         }
+        if action.action_type in {PROBE, VERIFY}:
+            payload["contingency_plan"] = contingency_plan(self.state, action)
+        if int(self.state.project_epoch or 0):
+            restart = next(
+                (row for row in reversed(self.state.artifacts)
+                 if row.get("kind") == "clean_restart_projection"), None)
+            if restart is not None:
+                payload["clean_restart"] = restart
+        payload["projection_tokens"] = projection_token_count(payload)
+        return payload
 
     def note_harness_failure(self, *, where: str, why: str, example: str = "") -> Pathology:
         row = accumulate_pathology(self.pathologies, where=where, why=why, example=example)
@@ -349,9 +392,24 @@ class OpenWorld:
             from .actions import action_input_key
             admitted.events.append(make_event("ArtifactAdded", {
                 "kind": "action_attempt", "action_type": action.action_type,
+                "project_epoch": int(before.project_epoch),
                 "target": action.target, "status": admitted.status,
                 "input_key": action_input_key(before, action),
+                # How much this attempt actually changed, so a repeatedly inert
+                # action type can be recognised within the run rather than
+                # rediscovered every tick.
+                "events_admitted": len([
+                    e for e in admitted.events
+                    if e.event_type not in {"ActionBlocked", "ActionFailed"}]),
                 "reason": admitted.extras.get("reason", ""),
+                # What this attempt actually came back with. Two identical
+                # outcomes from the same action on the same target is a fact the
+                # controller has already learned.
+                "outcome_key": str(
+                    admitted.extras.get("reason")
+                    or admitted.extras.get("outcome")
+                    or admitted.integrity_gap
+                    or admitted.status or ""),
                 "theory_id": action.extra.get("theory_id", ""),
                 "question_id": action.extra.get("question_id", ""),
                 "measured_cost": admitted.extras.get("measured_cost", {}),
@@ -362,6 +420,22 @@ class OpenWorld:
             "TickAdvanced",
             {
                 "meaningful": progress.meaningful,
+                # Operational progress and research progress are different
+                # claims and drive different clocks.
+                "research_meaningful": progress.research_meaningful,
+                "central_question_progress": progress.central_question_progress,
+                "decision_relevant_evidence": progress.decision_relevant_evidence,
+                "quality_gap_reduction": progress.quality_gap_reduction,
+                "critical_review_resolution": progress.critical_review_resolution,
+                "peripheral_question_progress": progress.peripheral_question_progress,
+                "caveat_only_repair": progress.caveat_only_repair,
+                "same_failure_repetition": progress.same_failure_repetition,
+                "low_value_activity": progress.low_value_activity,
+                "successful_reorientation": progress.successful_reorientation,
+                "replication_progress": progress.replication_progress,
+                "quality_dimension_progress": progress.quality_dimension_progress,
+                "objection_discovery": progress.objection_discovery,
+                "failure_information": progress.failure_information,
                 "action_type": action.action_type,
                 "frontier_target_id": frontier_id,
                 "scripted": False,
@@ -403,7 +477,10 @@ class OpenWorld:
         result["projection"] = {
             "overlay_names": projection["overlay_names"],
             "archive_tokens": projection["archive_tokens"],
+            "projection_tokens": projection.get("projection_tokens"),
             "harness_lines": list(projection["harness_lines"]),
+            "objections_shown": [row.get("review_id") for row in projection["open_objections"]],
+            "next_decisive_action": projection["research_journal"]["next_decisive_action"],
         }
         result["run_context"] = context.to_dict()
         result["harness_version"] = self.harness.version_id
@@ -476,15 +553,22 @@ class OpenWorld:
 
     def tick(self, *, probe_ready: Mapping[str, Any] | None = None) -> dict[str, Any]:
         actions = self.eligible(probe_ready=probe_ready)
+        _, refused = admissible(self.state, actions)
         chosen = self.schedule(actions)
         event = {
             "stage": "openworld_tick",
             "controller": "OpenWorld",
             "eligible": [item.to_dict() for item in actions],
             "eligible_types": [item.action_type for item in actions],
+            # An eligible action that the scheduler refuses must say why, or a
+            # whole action type can vanish from a run unnoticed.
+            "refused": refused,
             "stagnation": None
             if maybe_stagnation(self.state) is None
             else maybe_stagnation(self.state).to_dict(),
+            "strategic_stagnation": None
+            if maybe_strategic_stagnation(self.state) is None
+            else maybe_strategic_stagnation(self.state).to_dict(),
         }
         if chosen is None:
             event["scheduled"] = None
@@ -497,6 +581,9 @@ class OpenWorld:
         event["world_id"] = self.state.world_id
         event["frontier"] = dict(self.state.frontier)
         event["debt"] = dict(self.state.debt)
+        event["quality"] = dict(self.state.quality)
+        event["resources"] = dict(self.state.resources)
+        event["project_epoch"] = int(self.state.project_epoch)
         return event
 
     def run(

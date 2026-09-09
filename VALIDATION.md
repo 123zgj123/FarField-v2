@@ -40,6 +40,20 @@ code; its absence rejects admission. This is not evidence that live RSI works.
 | Competitors change experiment selection | `test_research_selection.py` |
 | Policy patch requires protected heldout admission | `test_research_policy_admission.py`, `test_research_policy.py` |
 | Legacy/OpenWorld execution parity | `test_research_worker_parity.py`, `test_research_replication.py` |
+| Root question immutable; drift recorded as debt | `test_research_contract.py` |
+| Quality derived from evidence, never asserted | `test_research_quality.py` |
+| Judgment dimensions capped by their grounding | `test_research_quality.py` |
+| Evidence-requiring objections refuse prose repair | `regressions/test_caveat_only_repair.py` |
+| Seven termination outcomes; readiness is a conjunction | `test_research_termination.py` |
+| Resource spend measured, budget filter refuses | `test_research_termination.py` |
+| Scheduler reads objections, quality, drift, budget | `test_research_decisions.py` |
+| Refused actions report a reason | `test_research_decisions.py` |
+| Restart keeps evidence and drops narrative | `test_research_decisions.py` |
+| Retry needs the action's declared inputs to change | `test_research_efficiency.py` |
+| An established outcome is not re-read | `test_research_efficiency.py` |
+| Real advancement credited exactly once | `test_research_efficiency.py` |
+| Capability-level decision behaviour | `behavioral/test_research_scenarios.py` |
+| Long-horizon trajectory guarantees | `behavioral/test_long_horizon.py` |
 
 The parity tests run actual registered subprocesses against frozen test worlds
 with recorded-model responses. They compare identities, preregistration order,
@@ -51,20 +65,81 @@ as scientific falsifiers, wrong world/object bindings, changed diagnosis
 handles or metrics, and unsupported claim escalation during paper drafting.
 Resume rebuilds derived snapshots from unchanged scientific events.
 
+## Behavioural evaluation
+
+Unit tests grade functions. They cannot grade a decision, so the control loop
+also has capability-level scenarios in
+[benchmark.py](src/farfield/extras/openworld/benchmark.py). Each installs a
+research *situation* into canonical state through the reducer and asks what the
+controller does next.
+
+| Scenario | Correct behaviour |
+|---|---|
+| A underpowered positive result | not ready; strengthen the evidence, not the wording |
+| B fatal reviewer objection | refuse the caveat; redesign |
+| C peripheral progress trap | strategic stagnation rises despite constant activity |
+| D dead end, budget left | change direction |
+| E dead end, budget nearly gone | do not open a new front |
+| F goal drift | drift detected and named as the readiness blocker |
+| G ten agreeing reviewers | belief, verified state and quality all unmoved |
+| H project restart | WORLD evidence and contract survive; speculation does not |
+
+Before this work 1 of 8 passed and seven of the eight failures chose the same
+action, which is a scheduler with one term rather than eight separate bugs. All
+eight pass now.
+
+[trajectory_eval.py](src/farfield/extras/openworld/trajectory_eval.py) runs the
+real controller against a scripted world for thirty actions and reports the
+capability metrics: decision-relevant evidence yield, time to redesign, time to
+pivot, wasted actions after a fatal objection, caveat-only repair rate, goal
+drift, replication completion, resource efficiency.
+
+| Metric, recoverable project, 30 actions | before | after |
+|---|---|---|
+| actions that changed nothing | 18 | 7 |
+| decision-relevant evidence | 2 | 6 |
+| resource efficiency (evidence per call) | 0.067 | 0.20 |
+| experiments actually reached | 1 | 3 |
+
+These are **scripted, deterministic, offline** scenarios. They measure how the
+controller allocates its actions. They are not evidence that the resulting
+science is any good, and passing them establishes only that specific known
+failure modes do not occur.
+
 ## Reproduce offline verification
 
-Latest complete run: 1,202 main-suite tests (6 skipped, no failures/errors),
-30 contract tests and 2 historical regression tests passed. `git diff --check`
-passed. The selected generation, scope, replication and parity paths also
-received an independent bounded code review; offline correctness does not
-establish live scientific value.
+Latest complete run: 1,311 tests (6 skipped, no failures or errors) including
+30 contract tests, the historical regression tests, the eight behavioural
+scenarios and the long-horizon trajectory guarantees. `git diff --check` passed.
 
 ```bash
 PYTHONPATH=src FARFIELD_LLM_MODE=replay python3.11 -m unittest discover -s tests -q
 PYTHONPATH=src FARFIELD_LLM_MODE=replay python3.11 -m unittest discover -s tests/contracts -q
 PYTHONPATH=src FARFIELD_LLM_MODE=replay python3.11 -m unittest discover -s tests/regressions -q
+PYTHONPATH=src python3.11 -m unittest discover -s tests/behavioral -t . -q
 git diff --check
 ```
+
+## Defects the trajectory evaluation found that unit tests did not
+
+Each of these was present with the whole suite green, and each needed a
+thirty-action run to expose:
+
+- derived project views were recomputed before `debt` was overwritten, silently
+  erasing goal-drift detection;
+- scheduler filters dropped eligible actions with no record — one malformed
+  experiment proposal removed every `PROBE` for an entire run while the tick
+  view still reported `PROBE` eligible;
+- belief refresh overwrote `retired` back to `supported`, resurrecting
+  abandoned directions into a pivot/redesign livelock;
+- after a pivot every hypothesis is retired, which the quality projection read
+  as total goal drift and answered with another pivot;
+- `ActionBlocked` counted as productive output, so a repeatedly failing action
+  always looked useful;
+- the retry key hashed the whole state, so any unrelated change made a
+  just-failed action look untried;
+- `REFLECT` and `ARCHIVE` emitted no events at all: they always reported success
+  and were structurally incapable of changing anything.
 
 ## Live-service observations and remaining validation
 
@@ -93,6 +168,15 @@ the final state digest matched event replay. A subsequent code correction makes
 the registered measurement identifier explicit in the writer prompt while
 retaining the rejection guard. This last prompt change has offline regression
 coverage and has not been retried live.
+
+The project-management layer added in this round is **offline validated only**.
+No live model or live world run exercised the contract, quality, review,
+redesign, pivot or termination paths; the trajectory world is a deterministic
+script. Root-question alignment is a lexical anchor guard and cannot recognise
+that two phrasings share an estimand. Quality dimensions are ordinal
+bookkeeping, calibrated against nothing. Efficiency thresholds in the
+long-horizon tests are floors measured against the current controller, not
+targets derived from any external standard.
 
 Open validation requirements remain: diverse real mission parity, a useful
 grounded trajectory corpus, independent replication worlds with suitable
