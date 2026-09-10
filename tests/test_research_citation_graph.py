@@ -492,3 +492,77 @@ class ConcurrentExtractionTest(unittest.TestCase):
         cache.get(*rows[0], client=client)
         cache.prefetch(rows, client=client, workers=4)
         self.assertEqual(client.calls, 4)
+
+
+class RestoredLineageTest(unittest.TestCase):
+    """CASE 9: verification must use the same rule at both ends.
+
+    Extraction resolved a citation through a canonical registry. Reading the
+    transition back from the survey artifact compared raw strings, so the
+    namespace mismatch the registry exists to settle reappeared at read time:
+    ten grounded transitions from a live citation graph restored as ten blocked
+    ones, and the lane that had finally found something could not use any of it.
+    """
+
+    @staticmethod
+    def paper(title, wid, year, representation, refs=(), aliases=()):
+        abstract = f"We study {title}. The data is represented as {representation}."
+        return {"title": title, "work_id": wid, "published": str(year),
+                "source": "openalex", "references": list(refs),
+                "aliases": list(aliases), "abstract": abstract,
+                "field_spans": {"representation": {"value": representation,
+                                                   "quote": representation,
+                                                   "section": "abstract"}}}
+
+    def cross_namespace_transition(self):
+        """A DOI-keyed work cited by its OpenAlex id — the live case."""
+        graph = EvolutionGraph()
+        graph.add_work(self.paper("roots", "doi:10.1/a", 2015,
+                                  "a dense token grid", aliases=["W1"]))
+        graph.add_work(self.paper("branch", "doi:10.1/b", 2020,
+                                  "a sparse retrieval index", refs=["W1"]))
+        graph.add_edge(CitationEdge(source="doi:10.1/a", target="doi:10.1/b",
+                                    kind=DIRECT_CITATION, source_year="2015",
+                                    target_year="2020"))
+        transitions, _ = transitions_from_graph(
+            graph, budget=ExtractionBudget(annotated_edges=0))
+        self.assertEqual(len(transitions), 1)
+        return transitions[0].to_dict()
+
+    def test_a_serialized_transition_still_verifies(self):
+        from farfield.extras.explore import _research_restore_transition
+
+        row = self.cross_namespace_transition()
+        self.assertEqual(row["provenance"]["identity"]["matched_reference"], "W1")
+        restored = _research_restore_transition(row)
+        self.assertEqual(restored.status, "extracted")
+        self.assertEqual(restored.reasons, ())
+
+    def test_a_reference_the_target_never_reported_is_refused(self):
+        from farfield.extras.explore import _research_restore_transition
+
+        row = self.cross_namespace_transition()
+        row["provenance"]["identity"]["matched_reference"] = "W999"
+        restored = _research_restore_transition(row)
+        self.assertEqual(restored.status, "blocked")
+        self.assertIn("missing_citation_lineage", restored.reasons)
+
+    def test_identifiers_that_do_not_name_the_source_are_refused(self):
+        from farfield.extras.explore import _research_restore_transition
+
+        row = self.cross_namespace_transition()
+        row["provenance"]["identity"]["source_keys"] = ["openalex:W1"]
+        restored = _research_restore_transition(row)
+        self.assertEqual(restored.status, "blocked",
+                         "keys that do not include the source's own cite id "
+                         "could belong to any paper")
+
+    def test_a_transition_retrieved_after_a_round_trip(self):
+        """The end-to-end property the live run needed and did not have."""
+        from farfield.extras.explore import retrieve_transitions
+
+        row = self.cross_namespace_transition()
+        selected = retrieve_transitions({"representation": "a dense token grid"}, [row])
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].operator, "representation_change")
+        self.assertEqual(selected[0].retrieval["applicability"], "established")

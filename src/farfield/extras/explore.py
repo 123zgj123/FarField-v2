@@ -22,7 +22,7 @@ handoff that asks the next `farfield research` to become the scientist.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from .lifecycle import (
     attractor_key,
@@ -1221,8 +1221,37 @@ def _research_date_bounds(value: str) -> tuple[Any, Any] | None:
     return None
 
 
+def _identity_lineage(source: Any, target: Any, identity: Mapping[str, Any]) -> bool:
+    """Re-derive lineage from the identifiers recorded with the transition.
+
+    Verification has to use the same rule at both ends. Extraction resolved the
+    citation through a canonical registry; restoring from the artifact compared
+    raw strings, so every transition built from real indexes came back
+    ``missing_citation_lineage`` — the exact namespace mismatch the registry
+    exists to settle, reintroduced at read time. Ten grounded transitions from
+    a live citation graph restored as ten blocked ones.
+
+    Nothing here trusts a stored verdict. The recorded reference must still be
+    in the target's own reference list, it must name one of the identifiers
+    recorded for the source, and those identifiers must include the source's
+    own cite id.
+    """
+    from .workid import parse_identifier
+
+    keys = {str(key) for key in identity.get("source_keys") or ()}
+    matched = str(identity.get("matched_reference") or "")
+    if not keys or not matched or matched not in tuple(target.references):
+        return False
+    parsed = parse_identifier(matched)
+    if parsed is None or f"{parsed[0]}:{parsed[1]}" not in keys:
+        return False
+    own = parse_identifier(source.cite_id)
+    return own is not None and f"{own[0]}:{own[1]}" in keys
+
+
 def extract_transition(source: Any, target: Any, client: Any = None,
-                       registry: Any = None) -> ResearchTransition:
+                       registry: Any = None,
+                       identity: Mapping[str, Any] | None = None) -> ResearchTransition:
     """Return a diagnosed transition; missing lineage/date/change blocks it.
 
     Inputs accept ResearchPaperState, FreshWork, or work mappings. Passing
@@ -1242,10 +1271,27 @@ def extract_transition(source: Any, target: Any, client: Any = None,
     # keyed by DOI against its own referenced_works keyed by W-id. Resolving
     # aliases cannot invent an edge — it only lets an edge a source already
     # reported find the work it points at.
+    recorded_identity: dict[str, Any] = {}
     if registry is not None:
         left = registry.resolve(source.cite_id)
         cited = set(registry.resolve_all(target.references))
         linked = bool(left and left != registry.resolve(target.cite_id) and left in cited)
+        if linked:
+            # Keep what the resolution was made of, so reading the transition
+            # back can redo it instead of falling back to a string comparison
+            # across namespaces that can never succeed.
+            record = registry.works.get(left)
+            recorded_identity = {
+                "source_canonical": left,
+                "matched_reference": next(
+                    (str(ref) for ref in target.references
+                     if registry.resolve(str(ref)) == left), ""),
+                "source_keys": sorted(record.keys) if record is not None else [],
+                "rule": "canonical_identity_v1",
+            }
+    elif identity:
+        linked = _identity_lineage(source, target, identity)
+        recorded_identity = dict(identity)
     else:
         linked = bool(source_id and target_id and source_id != target_id
                       and source_id in {_research_citation(ref) for ref in target.references})
@@ -1312,6 +1358,7 @@ def extract_transition(source: Any, target: Any, client: Any = None,
         source_cite_id=source.cite_id, target_cite_id=target.cite_id,
         source_published=source.published, target_published=target.published,
         provenance={"lineage": "target.references", "target_references": list(target.references),
+                    "identity": recorded_identity,
                     "source": source.provenance, "target": target.provenance,
                     "operator": "quoted_interpretation" if "operator" in annotation_spans else "component_change_interpretation"},
         extraction_spans={"source": source.extraction_spans, "target": target.extraction_spans, "annotations": annotation_spans},
@@ -1323,7 +1370,9 @@ def _research_restore_transition(row: dict[str, Any]) -> ResearchTransition:
     """Recheck persisted lineage and annotations against retained source text."""
     from dataclasses import replace
 
-    transition = extract_transition(row.get("source_state", {}), row.get("target_state", {}))
+    transition = extract_transition(
+        row.get("source_state", {}), row.get("target_state", {}),
+        identity=dict(row.get("provenance") or {}).get("identity") or None)
     if transition.status != "extracted":
         return transition
     texts = {f"{side}.{section}": text for side, state in (("source", transition.source_state), ("target", transition.target_state))
