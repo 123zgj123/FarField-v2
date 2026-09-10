@@ -31,6 +31,7 @@ class Stub:
     def complete(self, prompt, *, purpose="", system=None, **kwargs):
         self.calls += 1
         self.last = prompt
+        self.system = system or ""
         return type("C", (), {"text": self.payload})()
 
 
@@ -108,6 +109,47 @@ class SubjectScreenTest(unittest.TestCase):
         subject_screen(ROOT, [{**OPTIMIZATION, "full_text": "x" * 5000}], client)
         sent = json.loads(client.last)
         self.assertEqual(sorted(sent["papers"][0]), ["abstract", "cite_id", "title"])
+
+
+class ScreenScopeTest(unittest.TestCase):
+    """CASE 11: the test is the objects studied, not the question asked.
+
+    A first version of the screen asked for "the same objects and the same
+    phenomenon". It then rejected a QTL study of floral traits in Iris hybrids
+    — the right organs of the right genus, measured — because its question was
+    genetic rather than morphometric. Every retrieved paper was demoted, the
+    anchor was left empty, and the lane that depends on it had no current state
+    to retrieve against. A survey needs the field's work on the subject, not
+    only the papers that already answer the question.
+    """
+
+    QTL = {"cite_id": "Q", "title": "QTL analysis of floral traits in Louisiana "
+                                    "Iris hybrids", "problem": "", "research_question": "",
+           "abstract": "quantitative floral traits petal sepal iris hybrids mapping"}
+
+    def test_the_instruction_scopes_the_judgement_to_the_objects(self):
+        from farfield.extras.openworld.exploration import subject_screen
+
+        client = verdicts({"cite_id": "Q", "about_the_subject": True})
+        subject_screen(ROOT, [self.QTL], client)
+        system = client.system.casefold()
+        self.assertIn("same objects", system)
+        self.assertIn("different question", system,
+                      "the instruction must say a different question still counts")
+
+    def test_a_paper_on_the_subject_asking_another_question_is_kept(self):
+        client = verdicts({"cite_id": "Q", "about_the_subject": True,
+                           "subject": "floral traits in Iris hybrids",
+                           "reason": "It measures floral traits across Iris hybrids."})
+        report = relevance_report(ROOT, [self.QTL], client=client)
+        self.assertEqual(report["usable"], ["Q"])
+
+    def test_shared_words_pointing_at_another_field_are_still_rejected(self):
+        client = verdicts({"cite_id": "A", "about_the_subject": False,
+                           "subject": "convex optimization",
+                           "reason": "A petal-shaped region of a state space is not a flower."})
+        report = relevance_report(ROOT, [OPTIMIZATION], client=client)
+        self.assertEqual(report["usable"], [])
 
 
 class SearchTopicTest(unittest.TestCase):
