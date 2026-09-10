@@ -41,13 +41,29 @@ class BranchTests(unittest.TestCase):
         state = ScientificState(goal='inference', world_id='W1')
         state.add_question(question_id='Q1', text='inference')
         state.artifacts.append({'id': 's1', 'kind': 'literature_survey', 'question_id': 'Q1',
-                                'works': [{'title': 'source', 'work_id': 'P1'}]})
+                                'works': [{'title': 'source', 'work_id': 'P1'}],
+                                # The trajectory lane applies a grounded historical
+                                # transition, so a state where that lane is available
+                                # is one where the library is not empty.
+                                'research_transitions': [{'operator': 'representation_change',
+                                                          'status': 'extracted'}]})
         return state
 
     def test_first_hop_has_three_separate_lanes(self):
         actions = eligible_actions(self.state(), workers_connected=True)
         lanes = {a.extra.get('research_lane') for a in actions if a.action_type == THEORIZE}
         self.assertEqual(lanes, {'trajectory_supported', 'assumption_reframe', 'unconstrained'})
+
+    def test_the_trajectory_lane_is_not_offered_without_a_grounded_transition(self):
+        """A grounded transition needs one retrieved paper to cite another, and
+        keyword retrieval rarely returns such a pair. Offering the lane with an
+        empty library spends a tick failing in a way the state already predicts."""
+        state = self.state()
+        for row in state.artifacts:
+            row.pop('research_transitions', None)
+        lanes = {a.extra.get('research_lane') for a in
+                 eligible_actions(state, workers_connected=True) if a.action_type == THEORIZE}
+        self.assertEqual(lanes, {'assumption_reframe', 'unconstrained'})
 
     def test_second_hop_requires_actual_parent_evidence(self):
         state = self.state()

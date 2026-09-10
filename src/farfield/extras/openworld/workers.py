@@ -36,6 +36,41 @@ def _json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _reported_sample(metrics: Mapping[str, Any], world: Any) -> dict[str, Any]:
+    """How many units the registered experiment says each arm measured.
+
+    Nothing else in the runtime knows this. The world's size is an upper bound,
+    not the sample: an experiment on a 150-row table may have measured twenty
+    rows, and reading the bound as the sample would overstate power. So only the
+    experiment's own report counts — and a report larger than the attested world
+    holds is incoherent and refused rather than believed.
+    """
+    row = dict(metrics or {})
+    values = [row.get("n_treatment"), row.get("n_control")]
+    if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in values):
+        return {"sample_size": None,
+                "sample_size_basis": "not_reported_by_the_registered_experiment"}
+    smallest = min(int(v) for v in values)
+    scale = 0
+    if world is not None:
+        try:
+            from .worldio import summarize
+
+            scale = max((int(v) for key, v in summarize(world).items()
+                         if key.startswith("n_") and isinstance(v, int)), default=0)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            scale = 0
+    if scale and max(int(v) for v in values) > scale:
+        return {"sample_size": None,
+                "sample_size_basis": "refused_report_exceeds_the_attested_world",
+                "reported_sample_sizes": [int(v) for v in values],
+                "world_scale": scale}
+    return {"sample_size": smallest,
+            "sample_size_basis": "reported_by_the_registered_experiment",
+            "reported_sample_sizes": [int(v) for v in values],
+            "world_scale": scale or None}
+
+
 def _project_brief(kwargs: Mapping[str, Any]) -> tuple[str, ...]:
     """The controller's compact project brief, as worker context.
 
@@ -646,7 +681,8 @@ class LegacyResearchWorkers:
                     "world_id": world.id, "protocol_dir": str(folder), "protocol_digest": protocol_digest,
                     "experiment_proposal": proposal, "discriminator_registered": discriminator,
                     "diagnosis": diagnosis.to_dict(), "card": card.to_dict(),
-                    "claim": card.claim, "harness_version": str(state.get("harness_version") or "")}
+                    "claim": card.claim, "harness_version": str(state.get("harness_version") or ""),
+                    **_reported_sample(result.metrics, world)}
         if card.claim_spec:
             try:
                 from ..claimspec import claim_spec_from_payload, project_evidence_to_claim

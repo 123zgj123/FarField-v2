@@ -51,7 +51,9 @@ class QualityStateTest(unittest.TestCase):
         state = _state(make_event("EvidenceAdded", PROBE))
         row = compute_quality(state)["dimensions"]["experimental_adequacy"]
         self.assertEqual(row["status"], "weak")
-        self.assertTrue(any("sample_size_not_reported" in r for r in row["blocking_reasons"]))
+        self.assertTrue(any("does_not_report_units_measured" in r for r in row["blocking_reasons"]))
+        # The repair has to be one the pipeline can actually perform.
+        self.assertIn("REDESIGN", row["required_next_work"])
 
     def test_a_sample_below_the_contract_minimum_is_weak(self):
         state = _state(make_event("EvidenceAdded", {**PROBE, "sample_size": 6}))

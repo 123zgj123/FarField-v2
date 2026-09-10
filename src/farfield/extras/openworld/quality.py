@@ -469,13 +469,35 @@ def compute_quality(state: Any) -> dict[str, Any]:
                  ref=str(surveys[-1].get("id") or "literature_survey"))
 
     # -- technical correctness ----------------------------------------------
-    broken = [row for row in world if row.get("cannot_corroborate")]
-    if not world:
-        force("technical_correctness", "unknown", reason="no_admitted_world_evidence",
+    # Only executed experiments speak to this. A descriptive observation carries
+    # ``cannot_corroborate`` by construction — that is an honest label meaning
+    # "this describes the dataset, it does not test the hypothesis", not a
+    # validation failure — and reading it as a defect demanded a redesign of a
+    # design that did not exist yet.
+    # ``cannot_corroborate`` is set by several different causes, and most of them
+    # are owned by a dimension that names them precisely. Counting them here too
+    # charged one defect twice and reported it as a validation gap that was not
+    # there — the live probe below had an empty ``validation_gaps`` and a missing
+    # ablation, and this said "validation_gaps_on_1_evidence_rows".
+    OWNED_ELSEWHERE = {
+        "ablation_required": "baseline_strength",
+        "object_absent": "baseline_strength",
+        "dv_blind": "measurement_validity",
+    }
+    broken = [row for row in probes
+              if row.get("validation_gaps")
+              or (row.get("cannot_corroborate")
+                  and not any(row.get(key) for key in OWNED_ELSEWHERE)
+                  and row.get("world_consumed") is not False)]
+    if not probes:
+        force("technical_correctness", "unknown", reason="no_executed_experiment",
               work="PROBE")
     elif broken:
+        gaps = sorted({str(gap) for row in broken for gap in row.get("validation_gaps") or []})
         force("technical_correctness", "weak",
-              reason=f"validation_gaps_on_{len(broken)}_evidence_rows", work="REDESIGN")
+              reason=("; ".join(gaps) if gaps else
+                      f"{len(broken)}_evidence_rows_cannot_corroborate_for_an_unrecorded_reason"),
+              work="REDESIGN")
     else:
         note("technical_correctness", "adequate", ref=str(world[-1].get("evidence_id") or ""))
     if contradictions:
@@ -501,8 +523,14 @@ def compute_quality(state: Any) -> dict[str, Any]:
                   work="REDESIGN")
         elif unsized:
             # A result whose power nobody reported is not an adequate result.
+            # The repair is for the experiment to report how many units it
+            # measured, which is a measurement change, not another design.
+            refused = [row for row in unsized
+                       if str(row.get("sample_size_basis") or "").startswith("refused")]
             force("experimental_adequacy", "weak",
-                  reason=f"sample_size_not_reported:{len(unsized)}", work="REDESIGN")
+                  reason=("reported_sample_exceeded_the_attested_world" if refused
+                          else f"experiment_does_not_report_units_measured:{len(unsized)}"),
+                  work="REDESIGN")
         else:
             note("experimental_adequacy", "adequate", ref=str(probes[-1].get("evidence_id") or ""))
 

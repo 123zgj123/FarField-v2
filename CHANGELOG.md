@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-09-10 — Bounded live runs and the defects they exposed
+
+Three bounded segments against `gpt-5.6-sol` on the attested `fisher-iris`
+world. Seven defects, all present with a green suite, three of them introduced
+by earlier rounds of this same work.
+
+- A failing action's own `ActionBlocked` changed a question's status, and status
+  sat inside the slice that action declared it reads, so **the failure unblocked
+  its own retry** and the same doomed lane was rescheduled indefinitely. The
+  question slice is now identity only.
+- The inert-repetition rule keyed on action type and target and ignored the
+  research lane, so **one lane's failure banned two lanes never tried**, ending
+  a segment with viable work available. It now keys on the action variant.
+- The `trajectory_supported` lane is no longer offered when no grounded
+  transition exists. A transition needs one retrieved paper to cite another, and
+  keyword retrieval rarely returns such a pair, so the lane could only fail.
+- `technical_correctness` read all WORLD evidence, so a descriptive
+  observation's honest `cannot_corroborate` label counted as a validation
+  failure and **a redesign was demanded before any design existed**. It reads
+  executed experiments only, and no longer charges a cause that a named
+  dimension already owns.
+- REVIEW was eligible whenever a hypothesis and a survey existed. Its
+  precondition is now the reviewer's own output, so it is offered only when it
+  would say something not already recorded.
+- One unablated result raised two objections, one with an empty body. A defect
+  a specific dimension names is that dimension's complaint alone, and no
+  objection is ever recorded without a stated reason.
+- **No worker anywhere reported a sample size**, so `experimental_adequacy`
+  could never leave `weak`, redesign would have been demanded forever, and
+  `RESEARCH_READY` was unreachable for reasons unrelated to the science.
+  Registered experiments now report `n_treatment` and `n_control`; the smaller
+  arm is the sample, the attested world's size is a bound rather than the
+  sample, and a report exceeding that bound is refused rather than believed.
+- `tests/regressions/` lacked an `__init__.py`, so the main discovery command
+  had been silently skipping the whole directory.
+
+The third segment produced a live positive result — petal geometry separating
+iris species, the known answer — and the runtime still refused to corroborate it
+because the competing mechanism was not ablated. It stopped at
+`BUDGET_EXHAUSTED` with `research_complete: false`.
+
+Tests: 1391 passing (6 skipped), up from 1353.
+
 ## 2026-09-10 — Trajectory retrieval and world acquisition
 
 Two mechanisms the runtime claimed and did not have.

@@ -389,12 +389,16 @@ class OpenWorld:
             candidate = as_candidate(raw)
         admitted = self._admit(action, candidate)
         if self.workers_connected:
-            from .actions import action_input_key
+            from .actions import _action_variant, action_input_key
             admitted.events.append(make_event("ArtifactAdded", {
                 "kind": "action_attempt", "action_type": action.action_type,
                 "project_epoch": int(before.project_epoch),
                 "target": action.target, "status": admitted.status,
                 "input_key": action_input_key(before, action),
+                # What made this attempt distinct from its siblings, so a
+                # repeated failure can be diagnosed without replaying the log.
+                "variant": _action_variant(action),
+                "research_lane": action.extra.get("research_lane", ""),
                 # How much this attempt actually changed, so a repeatedly inert
                 # action type can be recognised within the run rather than
                 # rediscovered every tick.

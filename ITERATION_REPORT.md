@@ -242,3 +242,112 @@ One thing deliberately not done: calibrating `novelty` and `importance` against
 real acceptance decisions. That trains a predictor of acceptance, not of
 scientific value, and would contradict the system's own rule that reviewer
 judgment is not evidence.
+
+---
+
+## Round 7 — three bounded live runs
+
+`gpt-5.6-sol`, verified served. Attested `fisher-iris` with `uci-letters` bound
+as an explicit heldout. 12 model calls and 10 ticks per segment. Credentials
+process-only from a key file outside the repository. Root question: *does petal
+geometry separate iris species better than sepal geometry?*
+
+Seven defects, every one present with a green suite, **three of them introduced
+by earlier rounds of this same work**.
+
+### Segment 1 — produced nothing, and was the most informative of the three
+
+Zero hypotheses, zero experiments, dead at `BLOCKED` after eight ticks.
+
+1. A failing action's own `ActionBlocked` changed a question's status, and
+   status sat inside the slice that action declared it reads. **The failure
+   unblocked its own retry.** This was a hole in Round 5's own fix.
+2. The inert-repetition rule keyed on action type and target while ignoring the
+   research lane, so **one lane's failure banned two lanes never tried**. Also
+   Round 5's.
+3. A grounded transition needs one retrieved paper to cite another. Keyword
+   retrieval returned seven papers with no citation link among them, so the
+   transition library was empty and the lane could only fail.
+
+Defect 3 revises Round 6's conclusion. Retrieval was described there as limited
+by corpus size; in fact both the matcher *and* the step that builds the corpus
+were unusable, and no corpus would have helped while retrieval produced nothing
+to match. Round 6 fixed the half it could see.
+
+A fourth observation was recorded and not fixed: the anchor research state is
+assembled from every retrieved paper with no relevance filter, so an iris
+question was anchored to a paper on first-order conic optimisation. That needs a
+relevance criterion, which is larger than this round.
+
+### Segment 2 — reached a real experiment, and exposed four more
+
+Generated a hypothesis with a competing explanation, ran a registered two-arm
+probe (`treatment 0.2697`, `control 0.2652`), read the separation as
+`uninformative` rather than positive, refused corroboration for a missing
+ablation, recorded five structural objections including a fatal one, and stopped
+at `BUDGET_EXHAUSTED` without claiming completion.
+
+4. `technical_correctness` read *all* WORLD evidence, so a descriptive
+   observation's honest `cannot_corroborate` — which means "this describes the
+   dataset, it does not test the hypothesis" — counted as a validation failure
+   and **a redesign was demanded before any design existed**.
+5. REVIEW was eligible whenever a hypothesis and a survey existed, but the
+   structural reviewer draws objections from executed probes. A tick was spent
+   on a review that returned `no_new_objections`. Its precondition is now the
+   reviewer's own output, so the check and the executor cannot drift apart.
+6. One unablated result raised two objections, one with an empty body.
+7. **No worker anywhere reported a sample size.** `experimental_adequacy`
+   demands one, so the dimension could never leave `weak`, redesign would have
+   been demanded forever, and `RESEARCH_READY` was unreachable for reasons that
+   have nothing to do with the science — a quality bar that existed and could
+   not be met. This was Round 1's, and it took a live run to notice.
+
+### Segment 3 — verified all four fixes, and found the half-fix in 6
+
+No redesign before an experiment. One review instead of a wasted one. No
+empty-bodied objection. `experimental_adequacy` reached `adequate` from a sample
+the experiment reported itself — `n_treatment` and `n_control` both 150, inside
+the attested world's bound of 150.
+
+| | segment 1 | segment 2 | segment 3 |
+|---|---|---|---|
+| hypotheses | 0 | 1 + competitor | 1 + competitor |
+| experiments | 0 | 1 | 1 |
+| objections recorded | 0 | 5 | 4 |
+| `experimental_adequacy` | — | weak (unreachable) | **adequate** |
+| quality gap | 7 dimensions | 4 | **1** |
+| ending | `BLOCKED` | `BUDGET_EXHAUSTED` | `BUDGET_EXHAUSTED` |
+
+Segment 3's probe returned a **positive** result — petal geometry separating
+iris species, which is the known answer — and the runtime still refused to
+corroborate it, because the competing mechanism was not ablated.
+`mechanism_validated` stayed false, `central_claim_support` stayed `partial`,
+the review recorded "a positive arithmetic result is not a verified mechanism",
+and the segment ended `research_complete: false`. A live positive result on a
+question with a known answer did not become a finding. That is the single
+observation in this whole report that most needed a live run to produce.
+
+It also showed defect 6 had only been half fixed: the reviewer stopped
+duplicating, but the quality projection still charged one unablated result to
+both `baseline_strength` and `technical_correctness`, reporting the second as
+`validation_gaps_on_1_evidence_rows` when that row's gaps were empty. Recomputed
+against the real segment-3 state after the fix, the quality gap falls from two
+dimensions to one, and the remaining one is the ablation that is genuinely
+missing.
+
+Also found while checking coverage: `tests/regressions/` had no `__init__.py`,
+so the documented main discovery command had been silently skipping the entire
+directory — including the caveat-only-repair regression, the invariant this
+whole effort rests on.
+
+Tests: 1391 passing, up from 1353. Behavioural 8/8 and long-horizon trajectory
+metrics unchanged.
+
+### Status change
+
+The project-management, retrieval and acquisition layers are no longer
+*offline validated only*. Three bounded segments exercised the contract, quality
+state, review, redesign, resource and termination paths against a real model and
+a real attested world. What remains unvalidated live: PROJECT_PIVOT, heldout
+replication transfer, and any run long enough to test goal maintenance across
+tens of actions — every segment here ended on budget at ten ticks.

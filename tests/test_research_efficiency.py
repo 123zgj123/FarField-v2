@@ -60,10 +60,14 @@ class RetryKeyTest(unittest.TestCase):
 class InertRepetitionTest(unittest.TestCase):
     """A known answer is not worth re-reading."""
 
-    def _attempts(self, state, kind, target, outcome, times, admitted=0, epoch=0):
+    def _attempts(self, state, kind, target, outcome, times, admitted=0, epoch=0,
+                  variant=None):
+        from farfield.extras.openworld.actions import _action_variant
+
         return apply_events(state, [make_event("ArtifactAdded", {
             "kind": "action_attempt", "action_type": kind, "target": target,
             "outcome_key": outcome, "events_admitted": admitted,
+            "variant": _action_variant(self.action) if variant is None else variant,
             "project_epoch": epoch, "input_key": f"{kind}-{target}-{index}"})
             for index in range(times)])
 
@@ -88,6 +92,23 @@ class InertRepetitionTest(unittest.TestCase):
         state = self._attempts(self.state, "OBSERVE", "Q1", "NO_DATA", 1)
         state = self._attempts(state, "OBSERVE", "Q1", "WORLD_INCOMPATIBLE", 1)
         self.assertEqual(information_precondition(state, self.action), "")
+
+    def test_a_sibling_variant_is_not_banned_by_its_neighbour_failing(self):
+        """Three THEORIZE actions on one question differ only by research lane.
+        Keying established outcomes on type and target alone let one lane's
+        failure ban the two lanes that were never tried, which ended a live run
+        with viable work still available."""
+        from farfield.extras.openworld.actions import _action_variant
+
+        lane = ActionInstance(SPECS["THEORIZE"], target="Q1", frontier_target_id="Q1",
+                              extra={"research_lane": "trajectory_supported", "hop": 1})
+        sibling = ActionInstance(SPECS["THEORIZE"], target="Q1", frontier_target_id="Q1",
+                                 extra={"research_lane": "unconstrained", "hop": 1})
+        state = self._attempts(self.state, "THEORIZE", "Q1",
+                               "no_applicable_grounded_trajectory", 2,
+                               variant=_action_variant(lane))
+        self.assertIn("already_established", information_precondition(state, lane))
+        self.assertEqual(information_precondition(state, sibling), "")
 
     def test_a_pivot_lifts_what_the_retired_direction_established(self):
         state = self._attempts(self.state, "OBSERVE", "Q1", "NO_DATA", 2, epoch=0)
@@ -154,8 +175,21 @@ class NoOpPreconditionTest(unittest.TestCase):
         action = next(a for a in self.env.eligible() if a.action_type == "REVIEW")
         self.assertEqual(information_precondition(self.env.state, action), "")
         self.env.execute(action)
-        self.assertIn("already_carries_a_review",
+        self.assertIn("nothing_to_add",
                       information_precondition(self.env.state, action))
+
+    def test_review_is_refused_before_there_is_anything_to_object_to(self):
+        """A live run spent a tick reviewing a hypothesis with no evidence behind
+        it and got back no_new_objections. Reviewable is not the same as having
+        something to say."""
+        action = ActionInstance(SPECS["REVIEW"], target="Q1", frontier_target_id="Q1")
+        self.assertIn("nothing_to_add", information_precondition(self.env.state, action))
+        self.assertNotIn("REVIEW", {a.action_type for a in self.env.eligible()})
+
+    def test_review_becomes_available_once_an_experiment_has_run(self):
+        seed_probe_evidence(self.env, "E1", "T1", "Q1", sample_size=6)
+        action = ActionInstance(SPECS["REVIEW"], target="Q1", frontier_target_id="Q1")
+        self.assertEqual(information_precondition(self.env.state, action), "")
 
     def test_redrafting_does_not_close_an_evidence_gap(self):
         seed_probe_evidence(self.env, "E1", "T1", "Q1", sample_size=6)

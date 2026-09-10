@@ -258,7 +258,7 @@ SYSTEM = (
     " object and nothing else."
 )
 
-TEMPLATE = """Implement this pre-registered two-arm experiment as a Python script. {budget} It must write metrics.json with exactly two finite numbers: "treatment" and "control".
+TEMPLATE = """Implement this pre-registered two-arm experiment as a Python script. {budget} It must write metrics.json with two finite numbers, "treatment" and "control", and two non-negative integers, "n_treatment" and "n_control", giving how many units of the world each arm actually measured. Report the counts you really iterated over; a result whose power nobody can state cannot support a claim, and a count larger than the world holds is refused.
 
 Researcher's topic: {topic}
 Claim: {claim}
@@ -286,7 +286,7 @@ The two `measure` calls must share every argument except `mechanism_enabled`.
 
 Answer with JSON:
 {{"measure": "<=20 words: what single quantity both arms report",
- "source": "complete experiment.py that writes metrics.json as {{\\"treatment\\": <number>, \\"control\\": <number>}}"}}
+ "source": "complete experiment.py that writes metrics.json as {{\\"treatment\\": <number>, \\"control\\": <number>, \\"n_treatment\\": <int>, \\"n_control\\": <int>}}"}}
 """
 
 IMPLEMENTATION_FAILURE = """
@@ -882,6 +882,14 @@ def run_probe(
             control=None,
             error="metrics.json must be an object",
         )
+    # Sample counts are optional so an older registered protocol still runs, but
+    # when present they are the only admissible statement of this experiment's
+    # power: nothing else in the runtime knows how many units it touched.
+    counts: dict[str, int] = {}
+    for arm in ("n_treatment", "n_control"):
+        value = metrics.get(arm)
+        if (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+            counts[arm] = int(value)
     arms: dict[str, float] = {}
     for arm in ("treatment", "control"):
         value = metrics.get(arm)

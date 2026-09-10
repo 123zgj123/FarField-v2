@@ -1067,12 +1067,18 @@ def _structural_objections(state: Any) -> list[dict[str, Any]]:
         qid = str(row.get("question_id") or "")
         sample = row.get("sample_size")
         if sample is None:
+            basis = str(row.get("sample_size_basis") or "")
             add(review_id=f"review-power-{eid}", severity="major",
                 dimension="experimental_adequacy",
-                objection=("the result reports no sample size, so its power is "
-                           "unknown and it cannot support the claim"),
+                objection=(
+                    ("the experiment reported measuring more units than the attested "
+                     "world contains, so its stated power was refused")
+                    if basis.startswith("refused") else
+                    ("the experiment does not report how many units each arm measured, "
+                     "so its power is unknown and it cannot support the claim; the "
+                     "repaired script must write n_treatment and n_control")),
                 affected_claim=str(row.get("claim") or tid), affected_design=eid,
-                repair_type="experiment_redesign", requires_new_evidence=True,
+                repair_type="measurement_redesign", requires_new_evidence=True,
                 theory_id=tid, question_id=qid)
         elif min_sample and float(sample) < min_sample:
             add(review_id=f"review-power-{eid}", severity="major",
@@ -1104,12 +1110,30 @@ def _structural_objections(state: Any) -> list[dict[str, Any]]:
                 affected_design=eid, repair_type="stronger_baseline",
                 requires_new_evidence=True, theory_id=tid, question_id=qid)
         if row.get("cannot_corroborate"):
-            add(review_id=f"review-validity-{eid}", severity="fatal",
-                dimension="technical_correctness",
-                objection="; ".join(str(x) for x in row.get("validation_gaps") or [])
-                          or "validation gates did not pass for this evidence",
-                affected_design=eid, repair_type="experiment_redesign",
-                requires_new_evidence=True, theory_id=tid, question_id=qid)
+            # One defect must not become two objections, and an objection with
+            # no stated reason is not reviewable. Where a specific dimension
+            # already names the cause, that objection is the whole complaint.
+            gaps = [str(x) for x in row.get("validation_gaps") or [] if str(x).strip()]
+            named = {
+                "ablation_required": "a competing mechanism is not ablated",
+                "dv_blind": "the measure did not respond to the oracle placebo",
+                "object_absent": "both arms measured nothing",
+            }
+            covered = [text for key, text in named.items() if row.get(key)]
+            if row.get("world_consumed") is False:
+                covered.append("the effect is not separable from placebo worlds")
+            if gaps:
+                add(review_id=f"review-validity-{eid}", severity="fatal",
+                    dimension="technical_correctness", objection="; ".join(gaps),
+                    affected_design=eid, repair_type="experiment_redesign",
+                    requires_new_evidence=True, theory_id=tid, question_id=qid)
+            elif not covered:
+                add(review_id=f"review-validity-{eid}", severity="fatal",
+                    dimension="technical_correctness",
+                    objection=("this evidence is marked as unable to corroborate and the "
+                               "reason was not recorded, so nothing can be repaired from it"),
+                    affected_design=eid, repair_type="experiment_redesign",
+                    requires_new_evidence=True, theory_id=tid, question_id=qid)
         if row.get("outcome") == "supports" and not row.get("mechanism_validated"):
             add(review_id=f"review-mechanism-{eid}", severity="major",
                 dimension="mechanism_support",

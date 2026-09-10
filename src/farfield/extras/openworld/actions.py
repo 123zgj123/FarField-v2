@@ -573,13 +573,19 @@ def _open_reviews(state: ScientificState, severity: str = "") -> list[dict[str, 
 
 
 def _reviewable(state: ScientificState) -> bool:
-    """Is there anything a reviewer could hold an opinion about yet?"""
-    if any(row.get("role") == "ProbeEvidence" for row in state.evidence_records):
-        return True
-    if any(row.get("kind") == "research_synthesis" for row in state.artifacts):
-        return True
-    return bool(state.theories and any(
-        row.get("kind") == "literature_survey" and row.get("works") for row in state.artifacts))
+    """Would a review actually say something that is not already recorded?
+
+    Asked the weaker question — "is there anything reviewable?" — this returned
+    true as soon as a hypothesis and a survey existed, and a live run spent a
+    tick on a review that had no evidence to object to and returned
+    ``no_new_objections``. The reviewer's own output is the only honest
+    precondition, so it is computed and checked for something new.
+    """
+    from .executors import _structural_objections
+
+    known = {str(row.get("review_id") or "") for row in state.reviews}
+    return any(str(row.get("review_id") or "") not in known
+               for row in _structural_objections(state))
 
 
 def _redesign_demands(state: ScientificState) -> list[dict[str, Any]]:
@@ -692,6 +698,22 @@ def _pivot_trigger(state: ScientificState, *, strategic_stagnation: Any = None) 
     return None
 
 
+def _action_variant(action: ActionInstance) -> str:
+    """What distinguishes this action from a sibling of the same type and target.
+
+    Three THEORIZE actions on one question differ only by research lane. Keying
+    established outcomes on type and target alone let one lane's failure ban the
+    two lanes that were never tried.
+    """
+    import json
+
+    return json.dumps(
+        {name: action.extra.get(name) for name in
+         ("research_lane", "hop", "parent_theory_id", "theory_id",
+          "replication_world_id", "verify_kind")},
+        sort_keys=True, default=str)
+
+
 def information_precondition(state: ScientificState, action: ActionInstance) -> str:
     """Could this action tell the project anything it does not already know?
 
@@ -711,9 +733,11 @@ def information_precondition(state: ScientificState, action: ActionInstance) -> 
     # admitted nothing, the project has learned that fact. Running it a third
     # time is not an experiment, it is a re-read of a known answer — and this
     # holds even when unrelated parts of the state have moved on.
+    variant = _action_variant(action)
     inert = [row for row in attempts
              if str(row.get("action_type") or "") == kind
              and str(row.get("target") or "") == str(action.target or "")
+             and str(row.get("variant") or "") == variant
              and int(row.get("project_epoch") or 0) == int(state.project_epoch)
              and not int(row.get("events_admitted") or 0)]
     outcomes = [str(row.get("outcome_key") or "") for row in inert]
@@ -745,16 +769,8 @@ def information_precondition(state: ScientificState, action: ActionInstance) -> 
                 and list(previous.get("closed_designs") or []) == failed):
             return "the_archive_already_records_this_set"
 
-    if kind == REVIEW:
-        # Review is informative only where an objection does not already stand.
-        covered = {str(row.get("affected_design") or "") for row in state.reviews}
-        designs = {str(row.get("evidence_id") or "") for row in state.evidence_records
-                   if str(row.get("role") or "") == "ProbeEvidence"}
-        theories_reviewed = {str(row.get("theory_id") or "") for row in state.reviews}
-        live = {str(row.get("id") or "") for row in state.theories
-                if row.get("status") != "retired" and row.get("role") != "competing_explanation"}
-        if designs and designs <= covered and live <= theories_reviewed:
-            return "every_design_and_hypothesis_already_carries_a_review"
+    if kind == REVIEW and not _reviewable(state):
+        return "the_reviewer_has_nothing_to_add_that_is_not_already_recorded"
 
     if kind == SYNTHESIZE:
         gap = list((state.quality or {}).get("quality_gap") or [])
@@ -846,7 +862,14 @@ def worker_actions(state: ScientificState, actions: list[ActionInstance]) -> lis
                 reason="question_literature_gap", extra={"extract_trajectories": True}))
             continue
         theories = [t for t in state.theories if t.get("question_id") == qid]
+        # A grounded transition needs one retrieved paper to cite another. Keyword
+        # retrieval rarely returns a citation-linked pair, so this library is
+        # often empty — and offering a lane with nothing to ground it spends a
+        # tick to fail in a way the state already predicts.
+        grounded = any(r.get("research_transitions") for r in surveys)
         for lane in ("trajectory_supported", "assumption_reframe", "unconstrained"):
+            if lane == "trajectory_supported" and not grounded:
+                continue
             if not any(t.get("research_lane") == lane and int(t.get("hop") or 1) == 1 for t in theories):
                 found.append(ActionInstance(SPECS[THEORIZE], target=qid, frontier_target_id=qid,
                     lineage_id=str(question.get("lineage_id") or ""), reason="first_hop_branch_gap",
@@ -920,8 +943,13 @@ def _read_slice(state: ScientificState, name: str, action: ActionInstance) -> An
     if name == "missing_capabilities":
         return sorted(state.missing_capabilities)
     if name == "open_questions":
-        return [(r.get("id"), r.get("status")) for r in
-                state.open_questions + state.blocked_questions + state.resolved_questions]
+        # Identity only. A failing action records an ActionBlocked that changes
+        # the question's status, and status in this slice let that action
+        # unblock its own retry — the same doomed lane was rescheduled every
+        # tick because its own failure looked like a changed input.
+        return sorted(str(r.get("id") or "") for r in
+                      state.open_questions + state.blocked_questions
+                      + state.partial_questions + state.resolved_questions)
     if name in {"failure_archive", "failed_designs"}:
         return [(r.get("action_type"), r.get("theory_id"), r.get("reason"))
                 for r in state.failed_designs]

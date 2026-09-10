@@ -58,6 +58,10 @@ code; its absence rejects admission. This is not evidence that live RSI works.
 | Known failure conditions exclude a transition | `test_research_retrieval.py` |
 | Acquisition binds attested bytes only, never the network | `test_research_acquisition.py` |
 | Choosing the object of study needs contract authorisation | `test_research_acquisition.py` |
+| A descriptive observation is not a technical defect | `regressions/test_live_run_defects.py` |
+| An experiment reports the units it measured, bounded by its world | `regressions/test_live_run_defects.py` |
+| One defect raises one objection, never an empty one | `regressions/test_live_run_defects.py` |
+| Review is refused when it has nothing new to say | `regressions/test_live_run_defects.py` |
 
 The parity tests run actual registered subprocesses against frozen test worlds
 with recorded-model responses. They compare identities, preregistration order,
@@ -112,7 +116,7 @@ failure modes do not occur.
 
 ## Reproduce offline verification
 
-Latest complete run: 1,353 tests (6 skipped, no failures or errors) including
+Latest complete run: 1,391 tests (6 skipped, no failures or errors) including
 30 contract tests, the historical regression tests, the eight behavioural
 scenarios and the long-horizon trajectory guarantees. `git diff --check` passed.
 
@@ -150,6 +154,82 @@ thirty-action run to expose:
 - ACQUIRE supported exactly one gap, so a run could not bind any of the attested
   worlds on disk and `no_acquisition_recipe` was its most common terminal
   blockage.
+
+## Bounded live runs, 2026-09-10
+
+Three bounded segments against `gpt-5.6-sol` (verified served) on the attested
+`fisher-iris` world with `uci-letters` bound as an explicit heldout, 12 model
+calls and 10 ticks per segment. Credentials were process-only, read from a key
+file outside the repository, and never written to source, `.env` or a model
+cache. Root question: *does petal geometry separate iris species better than
+sepal geometry?*
+
+**Segment 1 produced nothing, and that was the point.** It reached
+`no_applicable_grounded_trajectory`, retried the identical doomed lane, ran out
+of eligible actions and stopped at `BLOCKED` with zero hypotheses and zero
+experiments. It exposed three defects that a green suite did not:
+
+- a failing action's own `ActionBlocked` changed a question's status, and status
+  was inside the slice that action declared it reads — so **the failure
+  unblocked its own retry**;
+- the inert-repetition rule keyed on action type and target while ignoring the
+  research lane, so **one lane's failure banned two lanes that were never
+  tried**, ending the segment with viable work still available;
+- a grounded transition needs one retrieved paper to cite another, and keyword
+  retrieval returned seven papers with no citation link among them, so the
+  transition library was empty and the `trajectory_supported` lane could only
+  fail.
+
+**Segment 2, after those fixes, reached a real experiment.** It generated a
+hypothesis with a competing explanation, ran a registered two-arm probe against
+the attested world (`treatment 0.2697`, `control 0.2652`), correctly read the
+separation as `uninformative` rather than positive, refused corroboration
+because a competing mechanism was not ablated, recorded five structural
+objections including a fatal one, and stopped at `BUDGET_EXHAUSTED` without
+claiming completion. It exposed four further defects:
+
+- `technical_correctness` read *all* WORLD evidence, so a descriptive
+  observation's honest `cannot_corroborate` label counted as a validation
+  failure and **a redesign was demanded before any design existed**;
+- REVIEW was eligible whenever a hypothesis and a survey existed, but the
+  structural reviewer draws its objections from executed probes, so a tick was
+  spent on a review that returned `no_new_objections`;
+- an unablated result raised two objections for one defect, one of them with an
+  empty body, because `cannot_corroborate` was set with no validation gap;
+- **no worker anywhere reported a sample size.** `experimental_adequacy` demands
+  one, so the dimension could never leave `weak`, redesign would have been
+  demanded forever, and `RESEARCH_READY` was unreachable for reasons that have
+  nothing to do with the science. Registered experiments now report
+  `n_treatment` and `n_control`; the smaller arm is the sample, the attested
+  world's size is a bound rather than the sample, and a report exceeding that
+  bound is refused rather than believed.
+
+**Segment 3, after those four fixes, behaved differently in every one of them.**
+No redesign before an experiment existed, one review instead of a wasted one,
+no empty-bodied objection, and `experimental_adequacy` reached `adequate` from a
+sample the experiment reported itself (`n_treatment` and `n_control` both 150,
+inside the attested world's bound of 150). The registered probe returned
+`treatment 0.0445` against `control -0.0124`, a positive result — and the
+runtime still refused to corroborate it, because the competing mechanism was not
+ablated. `mechanism_validated` stayed false, `central_claim_support` stayed
+`partial`, the review recorded "a positive arithmetic result is not a verified
+mechanism", and the segment stopped at `BUDGET_EXHAUSTED` with
+`research_complete: false`. A live positive result did not become a finding.
+
+Segment 3 also showed that the duplicate-objection fix had only been applied to
+the reviewer: the quality projection still charged one unablated result to both
+`baseline_strength` and `technical_correctness`, reporting the second as
+`validation_gaps_on_1_evidence_rows` when that row's validation gaps were empty.
+Causes owned by a named dimension are no longer charged twice, and an
+unexplained refusal now says that its reason was not recorded.
+
+Also found while checking coverage: `tests/regressions/` lacked an
+`__init__.py`, so the main discovery command had been silently skipping it.
+
+Segment 1's finding revises an earlier conclusion recorded here. Trajectory
+retrieval was described as limited by corpus size; both the matcher *and* the
+step that builds the corpus were unusable, and no amount of corpus would have
+helped while retrieval returned nothing to match.
 
 ## Live-service observations and remaining validation
 
