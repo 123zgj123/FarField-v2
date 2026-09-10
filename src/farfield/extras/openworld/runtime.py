@@ -330,6 +330,9 @@ def run_research(
         "segment": outcome.get("segment", RUN_SEGMENT_DONE),
         "decision_journal": research_journal(env.state),
         "quality": dict(env.state.quality),
+        "trajectory": __import__(
+            "farfield.extras.openworld.exploration", fromlist=["x"]
+        ).trajectory_metrics(env.state),
         "resources": dict(env.state.resources),
         "reviews": list(env.state.reviews),
         "project_epoch": int(env.state.project_epoch),

@@ -145,10 +145,16 @@ class OpenWorld:
                     return DEFAULT_EXECUTORS["VERIFY"](env, action)
                 ledger = getattr(getattr(adapter, "client", None), "ledger", None)
                 before_tokens = float(getattr(ledger, "spent_tokens", 0))
+                before_calls = float(getattr(ledger, "spent_calls", 0))
                 started = time.monotonic()
                 result = as_candidate(worker(action, deepcopy(env.state.to_dict()), workspace=env.workspace,
                               world_id=env.state.world_id, projection=env.project_for(action)))
+                # Calls, not actions. One SURVEY can extract a dozen papers, and
+                # the resource view billing it as a single api_call disagreed
+                # with the ledger that actually enforces the envelope — two
+                # meters of the same name, an order of magnitude apart.
                 cost = {"tokens": float(getattr(ledger, "spent_tokens", 0)) - before_tokens,
+                        "api_calls": float(getattr(ledger, "spent_calls", 0)) - before_calls,
                         "wall_seconds": time.monotonic() - started}
                 result.extras["measured_cost"] = cost
                 if result.evidence is not None:
@@ -587,6 +593,9 @@ class OpenWorld:
         event["debt"] = dict(self.state.debt)
         event["quality"] = dict(self.state.quality)
         event["objective"] = dict(self.state.objective)
+        from .exploration import trajectory_metrics
+
+        event["trajectory"] = trajectory_metrics(self.state)
         event["resources"] = dict(self.state.resources)
         event["project_epoch"] = int(self.state.project_epoch)
         return event

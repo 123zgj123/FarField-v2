@@ -50,6 +50,10 @@ class FreshWork:
     url: str = ""
     venue: str = ""
     references: tuple[str, ...] = ()
+    # Other identifiers the source reported for this same work. Without them an
+    # OpenAlex work keyed by DOI cannot be found by a reference recorded as a
+    # W-id, and a real citation never becomes an edge.
+    aliases: tuple[str, ...] = ()
 
     def cite_id(self) -> str:
         """The only id a briefing may copy into read_first."""
@@ -69,6 +73,11 @@ class FreshWork:
             references=tuple(
                 str(item).strip()
                 for item in (row.get("references") or ())
+                if str(item).strip()
+            ),
+            aliases=tuple(
+                str(item).strip()
+                for item in (row.get("aliases") or ())
                 if str(item).strip()
             ),
         )
@@ -98,6 +107,8 @@ class FreshWork:
             payload["venue"] = self.venue
         if self.references:
             payload["references"] = list(self.references)
+        if self.aliases:
+            payload["aliases"] = list(self.aliases)
         return payload
 
 
@@ -316,6 +327,8 @@ class CompositeFeed:
         openalex: Any = None,
         seed_ids: tuple[str, ...] = (),
         document_fetcher: Any = None,
+        works_by_id: Any = None,
+        works_citing: Any = None,
     ) -> None:
         self.arxiv = arxiv or ArxivFeed()
         self._search_scholar = scholar
@@ -325,7 +338,25 @@ class CompositeFeed:
             raise ValueError("literature seeds must be arXiv identifiers")
         self.seed_ids = tuple(dict.fromkeys(seed_ids))
         self.document_fetcher = document_fetcher
+        self._works_by_id = works_by_id
+        self._works_citing = works_citing
         self._documents: dict[str, dict[str, Any]] = {}
+
+    def works_by_id(self, keys: list[str]) -> list[FreshWork] | FeedBlocked:
+        """Dereference canonical identifiers. Injectable for tests."""
+        if self._works_by_id is not None:
+            return self._works_by_id(keys)
+        from .sources import fetch_openalex_by_id
+
+        return fetch_openalex_by_id(keys, fetcher=self.document_fetcher)
+
+    def works_citing(self, keys: list[str]) -> list[FreshWork] | FeedBlocked:
+        """Later works citing these. Injectable for tests."""
+        if self._works_citing is not None:
+            return self._works_citing(keys)
+        from .sources import fetch_openalex_citing
+
+        return fetch_openalex_citing(keys, fetcher=self.document_fetcher)
 
     def read_work(self, work: FreshWork) -> dict[str, Any] | FeedBlocked:
         from .sources import read_arxiv_document

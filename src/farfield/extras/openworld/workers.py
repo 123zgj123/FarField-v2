@@ -253,25 +253,59 @@ class LegacyResearchWorkers:
                         "source_documents": documents, "document_gaps": document_gaps,
                         **harvest.to_dict()}
             if action.extra.get("extract_trajectories"):
-                from ..explore import extract_paper_state, extract_transition
-                papers, transitions, gaps = [], [], []
+                # Keyword search finds seeds. A citation graph is built by
+                # dereferencing the references a source already reported, which
+                # the previous pairwise loop never did: it looked for citations
+                # *inside* one search's six results, and in six live segments
+                # found none.
+                from ..citations import (
+                    ExpansionBudget, ExtractionBudget, PaperStateCache,
+                    expand_citations, recover_trajectories, transitions_from_graph,
+                )
+
+                gaps: list[dict[str, Any]] = []
+                root_question = str(state.get("contract", {}).get("root_question") or topic)
+
+                def relevance_of(row: Mapping[str, Any]) -> bool:
+                    """Expansion follows citations that bear on the question.
+
+                    An unbounded neighbourhood is a crawl. Off-topic nodes are
+                    counted and reported rather than followed, so a survey can
+                    say whether retrieval or expansion was the limit.
+                    """
+                    from .exploration import paper_relevance
+
+                    return paper_relevance(root_question, row)["relevance"] != "off_topic"
+
+                budget = ExpansionBudget(**dict(action.extra.get("expansion_budget") or {}))
+                graph = expand_citations(
+                    [w.to_dict() for w in works[: budget.seeds]],
+                    fetch_by_id=getattr(feed, "works_by_id", None),
+                    fetch_citing=getattr(feed, "works_citing", None),
+                    budget=budget,
+                    relevant=relevance_of,
+                )
+                # The anchor papers *are* graph seeds. Running both stages
+                # through one cache means an edge touching a seed costs no
+                # further call, and one budget covers the whole survey rather
+                # than two stages each spending freely: the previous version
+                # extracted every edge's two endpoints again, so a paper on
+                # five edges was read six times over.
+                extraction = ExtractionBudget(
+                    **dict(action.extra.get("extraction_budget") or {}))
+                cache = PaperStateCache(graph.registry, limit=extraction.papers)
+                papers = []
                 for work in works[:6]:
-                    try:
-                        papers.append(extract_paper_state(documents.get(work.cite_id(), work), client=self.client))
-                    except (LLMUnavailable, ValueError, KeyError, TypeError) as exc:
-                        gaps.append({"cite_id": work.cite_id(), "reason": str(exc)})
-                        papers.append(extract_paper_state(documents.get(work.cite_id(), work)))
-                for source in papers:
-                    for target in papers:
-                        from ..explore import _research_citation
-                        if source.cite_id == target.cite_id or _research_citation(source.cite_id) not in {_research_citation(r) for r in target.references}:
-                            continue
-                        try:
-                            transition = extract_transition(source, target, client=self.client)
-                        except (LLMUnavailable, ValueError, KeyError, TypeError) as exc:
-                            gaps.append({"source": source.cite_id, "target": target.cite_id, "reason": str(exc)})
-                            transition = extract_transition(source, target)
-                        transitions.append(transition.to_dict())
+                    state_of = cache.get(cache.key(work.cite_id()),
+                                         documents.get(work.cite_id(), work),
+                                         client=self.client)
+                    if state_of is not None:
+                        papers.append(state_of)
+                extracted, transition_gaps = transitions_from_graph(
+                    graph, client=self.client, budget=extraction, cache=cache)
+                gaps.extend(transition_gaps)
+                transitions = [t.to_dict() for t in extracted]
+                trajectories = recover_trajectories(graph, extracted)
                 # Anchor the research state on papers that bear on the question.
                 # A live run anchored an iris-morphometrics question to a paper on
                 # first-order conic programming because both mention "geometry",
@@ -302,7 +336,10 @@ class LegacyResearchWorkers:
                                  "retrieved": len(papers),
                                  "note": "the anchor is empty rather than built from "
                                          "papers that only share a word"})
-                artifact.update(paper_states=[p.to_dict() for p in papers], research_transitions=transitions,
+                artifact.update(paper_states=[p.to_dict() for p in papers],
+                                research_transitions=transitions,
+                                research_trajectories=trajectories,
+                                citation_graph=graph.summary(),
                                 research_state=anchor, extraction_gaps=gaps,
                                 retrieval_relevance=relevance)
             _json(path, artifact)

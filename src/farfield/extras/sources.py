@@ -303,6 +303,11 @@ def search_openalex(
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return FeedBlocked(attempted=url, reason=f"malformed openalex json: {error}")
+    return _openalex_works(payload)
+
+
+def _openalex_works(payload: dict[str, Any]) -> list[FreshWork]:
+    """Rows to works. The OpenAlex id is kept as an alias, not discarded."""
     works: list[FreshWork] = []
     for row in payload.get("results") or []:
         if not isinstance(row, dict):
@@ -328,7 +333,26 @@ def search_openalex(
                 references=_reference_keys(row),
             )
         )
+        # The OpenAlex id must survive even when the work is keyed by DOI, or a
+        # reference recorded as a W-id can never find it.
+        works[-1] = _with_alias(works[-1], oa_id, row)
     return works
+
+
+def _with_alias(work: FreshWork, openalex_id: str, row: dict[str, Any]) -> FreshWork:
+    """Keep every identifier the source gave for this work.
+
+    A work keyed by DOI whose OpenAlex id is dropped cannot be found by a
+    reference recorded as a W-id, which is how genuine citations failed to
+    become edges.
+    """
+    from dataclasses import replace
+
+    ids = row.get("ids") if isinstance(row.get("ids"), dict) else {}
+    aliases = [openalex_id, *[str(value) for value in ids.values() if value]]
+    keep = tuple(dict.fromkeys(item for item in aliases if item))
+    return replace(work, aliases=keep,
+                   url=work.url or f"https://openalex.org/{openalex_id}")
 
 
 def merge_works(*groups: list[FreshWork]) -> list[FreshWork]:
@@ -355,3 +379,84 @@ def merge_works(*groups: list[FreshWork]) -> list[FreshWork]:
         key=lambda w: (w.published, w.title),
         reverse=True,
     )
+
+
+def fetch_openalex_by_id(
+    keys: list[str],
+    *,
+    fetcher: Fetcher | None = None,
+    max_results: int = 25,
+) -> list[FreshWork] | FeedBlocked:
+    """Dereference canonical identifiers into works.
+
+    This is the step the live path never took: references were kept as strings
+    and compared, so a citation the source had already reported could not become
+    an edge. OpenAlex resolves its own W-ids, DOIs and arXiv ids in one filtered
+    request, so a node's whole reference list costs one call.
+    """
+    from .workid import ARXIV, DOI, OPENALEX, parse_identifier
+
+    buckets: dict[str, list[str]] = {}
+    for key in keys or ():
+        parsed = parse_identifier(key)
+        if parsed is None:
+            continue
+        buckets.setdefault(parsed[0], []).append(parsed[1])
+    clause = []
+    if buckets.get(OPENALEX):
+        clause.append("openalex:" + "|".join(buckets[OPENALEX][:50]))
+    if buckets.get(DOI):
+        clause.append("doi:" + "|".join(buckets[DOI][:50]))
+    if buckets.get(ARXIV):
+        clause.append("ids.openalex:" + "|".join(buckets[ARXIV][:50])) if False else None
+    if not clause:
+        return []
+    works: list[FreshWork] = []
+    for filter_clause in clause:
+        url = OPENALEX_API + "?" + urllib.parse.urlencode({
+            "filter": filter_clause,
+            "per-page": str(max_results),
+            "select": "id,display_name,publication_year,doi,abstract_inverted_index,"
+                      "primary_location,referenced_works,ids",
+        })
+        raw = _get(url, fetcher)
+        if isinstance(raw, FeedBlocked):
+            return raw
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            return FeedBlocked(attempted=url, reason=f"malformed openalex json: {error}")
+        works.extend(_openalex_works(payload))
+    return works
+
+
+def fetch_openalex_citing(
+    keys: list[str],
+    *,
+    fetcher: Fetcher | None = None,
+    max_results: int = 8,
+) -> list[FreshWork] | FeedBlocked:
+    """Later works that cite this one. Forward provenance, bounded per call."""
+    from .workid import OPENALEX, parse_identifier
+
+    targets = []
+    for key in keys or ():
+        parsed = parse_identifier(key)
+        if parsed and parsed[0] == OPENALEX:
+            targets.append(parsed[1])
+    if not targets:
+        return []
+    url = OPENALEX_API + "?" + urllib.parse.urlencode({
+        "filter": "cites:" + "|".join(targets[:10]),
+        "per-page": str(max_results),
+        "select": "id,display_name,publication_year,doi,abstract_inverted_index,"
+                  "primary_location,referenced_works,ids",
+    })
+    raw = _get(url, fetcher)
+    if isinstance(raw, FeedBlocked):
+        return raw
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return FeedBlocked(attempted=url, reason=f"malformed openalex json: {error}")
+    return _openalex_works(payload)

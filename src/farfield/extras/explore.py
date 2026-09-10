@@ -1221,7 +1221,8 @@ def _research_date_bounds(value: str) -> tuple[Any, Any] | None:
     return None
 
 
-def extract_transition(source: Any, target: Any, client: Any = None) -> ResearchTransition:
+def extract_transition(source: Any, target: Any, client: Any = None,
+                       registry: Any = None) -> ResearchTransition:
     """Return a diagnosed transition; missing lineage/date/change blocks it.
 
     Inputs accept ResearchPaperState, FreshWork, or work mappings. Passing
@@ -1235,7 +1236,20 @@ def extract_transition(source: Any, target: Any, client: Any = None) -> Research
     reasons = []
     source_id = _research_citation(source.cite_id)
     target_id = _research_citation(target.cite_id)
-    if not source_id or not target_id or source_id == target_id or source_id not in {_research_citation(ref) for ref in target.references}:
+    # Lineage is checked against canonical identity when a registry is supplied.
+    # Without one this stays the original string comparison, which two indexes
+    # naming the same paper differently could never satisfy: an OpenAlex work
+    # keyed by DOI against its own referenced_works keyed by W-id. Resolving
+    # aliases cannot invent an edge — it only lets an edge a source already
+    # reported find the work it points at.
+    if registry is not None:
+        left = registry.resolve(source.cite_id)
+        cited = set(registry.resolve_all(target.references))
+        linked = bool(left and left != registry.resolve(target.cite_id) and left in cited)
+    else:
+        linked = bool(source_id and target_id and source_id != target_id
+                      and source_id in {_research_citation(ref) for ref in target.references})
+    if not linked:
         reasons.append("missing_citation_lineage")
     source_dates = _research_date_bounds(source.published)
     target_dates = _research_date_bounds(target.published)

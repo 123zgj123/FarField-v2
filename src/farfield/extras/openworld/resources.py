@@ -64,6 +64,10 @@ def compute_resources(state: Any) -> dict[str, Any]:
             continue
         if eid:
             seen.add(eid)
+    # Live runs stamp the ledger's real call count on every attempt. The
+    # attempt count is only a floor for replayed or scripted states that
+    # measured nothing, and it undercounts any action that makes several calls.
+    measured_calls = spent["api_calls"] > 0
     spent["api_calls"] = spent["api_calls"] or float(len(attempts))
     spent["probe_runs"] = float(
         sum(1 for row in attempts if row.get("action_type") in {"PROBE", "VERIFY"})
@@ -87,6 +91,8 @@ def compute_resources(state: Any) -> dict[str, Any]:
         "budget_pressure": round(pressure, 6),
         "exhausted": exhausted,
         "basis": "measured_cost_from_admitted_events_not_estimates",
+        "api_calls_basis": ("measured_model_calls" if measured_calls
+                            else "action_attempt_count_floor"),
     }
 
 

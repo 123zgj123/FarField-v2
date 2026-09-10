@@ -446,3 +446,65 @@ def relevance_report(root_question: str, papers: Any) -> dict[str, Any]:
                  "question. Papers that merely share a word are recorded and not used "
                  "to anchor the research state."),
     }
+
+
+# ---------------------------------------------------------------------------
+# Trajectory telemetry
+# ---------------------------------------------------------------------------
+
+
+def trajectory_metrics(state: Any) -> dict[str, Any]:
+    """Whether the lane the system is named after is eligible, and whether it fired.
+
+    Six live segments reported the lane as present and never used it. These
+    numbers separate the three things that can be wrong: retrieval found no
+    seeds, expansion found no citation edges, or extraction found no delta.
+    """
+    surveys = [dict(row) for row in getattr(state, "artifacts", []) or []
+               if row.get("kind") == "literature_survey"]
+    graphs = [row.get("citation_graph") or {} for row in surveys]
+    transitions = [t for row in surveys for t in row.get("research_transitions") or []]
+    trajectories = [t for row in surveys for t in row.get("research_trajectories") or []]
+    theories = [dict(row) for row in getattr(state, "theories", []) or []
+                if row.get("role") != "competing_explanation"]
+    lane = [row for row in theories if row.get("research_lane") == "trajectory_supported"]
+    used = [row for row in theories if row.get("source_trajectories_used")]
+    depths = [int(row.get("length") or 0) for row in trajectories]
+    return {
+        "rule": "trajectory-telemetry-v1",
+        "raw_seed_count": sum(len(row.get("works") or []) for row in surveys),
+        "relevant_seed_count": sum(
+            len((row.get("retrieval_relevance") or {}).get("usable") or [])
+            for row in surveys),
+        "citation_nodes_requested": sum(int(g.get("citation_nodes_requested") or 0)
+                                        for g in graphs),
+        "citation_nodes_fetched": sum(int(g.get("citation_nodes_fetched") or 0)
+                                      for g in graphs),
+        "citation_nodes_verified": sum(int(g.get("citation_nodes_verified") or 0)
+                                       for g in graphs),
+        "citation_graph_nodes": sum(int(g.get("nodes") or 0) for g in graphs),
+        "citation_edges_found": sum(int(g.get("edges") or 0) for g in graphs),
+        "provenance_edges": sum(int(g.get("provenance_edges") or 0) for g in graphs),
+        "blocked_sources": sum(int(g.get("blocked_sources") or 0) for g in graphs),
+        "paper_extraction_calls": sum(
+            int((g.get("extraction") or {}).get("paper_extraction_calls") or 0)
+            for g in graphs),
+        "annotation_calls": sum(
+            int((g.get("extraction") or {}).get("annotation_calls") or 0)
+            for g in graphs),
+        "survey_model_calls": sum(
+            int((g.get("extraction") or {}).get("model_calls_total") or 0)
+            for g in graphs),
+        "extractions_avoided": sum(
+            int((g.get("extraction") or {}).get("extractions_avoided") or 0)
+            for g in graphs),
+        "verified_transition_count": len(transitions),
+        "trajectory_count": len(trajectories),
+        "trajectory_path_depth": max(depths) if depths else 0,
+        "trajectory_supported_eligible": bool(transitions),
+        "trajectory_supported_activation_count": len(lane),
+        "source_trajectories_used_count": sum(
+            len(row.get("source_trajectories_used") or []) for row in used),
+        "lane_fallbacks": [str(row.get("lane_fallback") or "") for row in theories
+                           if row.get("lane_fallback")],
+    }
