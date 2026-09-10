@@ -72,6 +72,7 @@ PROBE_TEMPLATE = """Answer with JSON:
  "control_arm": "<=25 words: what the control arm does (same in every other way)",
  "expected_direction": "treatment_lower" or "treatment_higher" — the metric relation IF the mechanism is real,
  "alternative_direction": "treatment_lower" or "treatment_higher" — the metric relation IF the alternative explains the effect instead,
+ "alternative_hypothesis_id": the exact id of the registered competing hypothesis this alternative is, copied from the competing_theories you were given, or "" if this alternative is not one of them,
  "expected_if_alternative": "<=30 words: what the metrics look like if the alternative explains the effect instead",
  "margin": <number>,
  "margin_reason": "<=25 words: why THIS margin — what size of separation would be indistinguishable from noise or constant factors in this experiment",
@@ -293,6 +294,11 @@ class Diagnosis:
     # card's compiled handle (the registration), recorded so a reader can
     # see the drift the model attempted.
     handle_held: bool = False
+    # Which registered competing hypothesis this alternative is. Optional,
+    # and absent means unlinked: a discriminating registration against
+    # competitor C establishes nothing about a prose alternative A, so the
+    # ablation relief fails closed when this is not stated.
+    alternative_hypothesis_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -303,6 +309,7 @@ class Diagnosis:
             "control_arm": self.control_arm,
             "expected_direction": self.expected_direction,
             "alternative_direction": self.alternative_direction,
+            "alternative_hypothesis_id": self.alternative_hypothesis_id,
             "expected_if_alternative": self.expected_if_alternative,
             "margin": self.margin,
             "margin_reason": self.margin_reason,
@@ -401,6 +408,7 @@ def diagnosis_from_payload(
             " pre-registered before the probe runs",
         )
     alternative_direction = str(payload.get("alternative_direction") or "").strip()
+    alternative_hypothesis_id = str(payload.get("alternative_hypothesis_id") or "").strip()
     if alternative_direction not in DIRECTIONS:
         raise _refuse(
             "read alternative_direction",
@@ -498,6 +506,7 @@ def diagnosis_from_payload(
         card_id=card_id,
         expected_direction=direction,
         alternative_direction=alternative_direction,
+        alternative_hypothesis_id=alternative_hypothesis_id,
         margin=margin,
         baseline_cite_id=cite_id,
         baseline_method=method,

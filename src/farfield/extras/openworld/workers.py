@@ -110,6 +110,24 @@ def _project_brief(kwargs: Mapping[str, Any]) -> tuple[str, ...]:
                        ensure_ascii=False),)
 
 
+def _names_observable(declared: str, registered: str) -> bool:
+    """Does this declared observable name the registered one?
+
+    Not string equality between two independently written texts. The proposal
+    may describe the measurement — "dropout-induced petal-minus-sepal
+    mean_pairwise_distance contrast" — and what matters is that it names the
+    registered identifier the probe actually measured, as a whole token.
+    """
+    import re
+
+    left, right = str(declared or "").strip(), str(registered or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(right)}(?![A-Za-z0-9_])", left) is not None
+
+
 def _card(raw: Any) -> GeneratedCard:
     if isinstance(raw, GeneratedCard):
         return raw
@@ -700,14 +718,37 @@ class LegacyResearchWorkers:
                       "treatment_higher": "treatment_higher", "treatment_lower": "treatment_lower"}
         own = predictions.get(card.card_id) or {}
         other = predictions.get(competitors[0]) or {} if len(competitors) == 1 else {}
+        # The hypothesis proposal and the diagnosis were written at different
+        # times against different vocabularies: a proposal may predict
+        # "unchanged", which the diagnosis deliberately forbids because a
+        # no-difference registration cannot compute a verdict. Requiring a
+        # literal match between the two made the most common competing
+        # explanation — "the effect is not there" — impossible to register, and
+        # requiring the proposal to restate the observable identifier verbatim
+        # meant two independently written strings had to be equal.
+        #
+        # What must hold is substantive: both hypotheses measured on the
+        # registered observable, opposed predictions, and the proposal anchored
+        # to the registration on at least one side.
+        registered = str(diagnosis.world_observable or "").strip()
+        declares = [str((row or {}).get("observable") or "")
+                    for row in (own, other)]
+        names_registered = bool(registered) and all(
+            _names_observable(text, registered) for text in declares)
+        own_arm = directions.get(own.get("direction"))
+        other_arm = directions.get(other.get("direction"))
+        anchored = (
+            (own_arm is None or own_arm == diagnosis.expected_direction)
+            and (other_arm is None or other_arm == diagnosis.alternative_direction)
+            and (own_arm == diagnosis.expected_direction
+                 or other_arm == diagnosis.alternative_direction))
         discriminator = bool(len(compared) == 2 and len(set(compared)) == 2
             and card.card_id in compared and set(compared) <= live_ids
             and isinstance(own, Mapping) and isinstance(other, Mapping)
-            and own.get("observable") == other.get("observable") == diagnosis.world_observable
-            and bool(diagnosis.world_observable)
-            and spec.measure.strip() == diagnosis.world_observable
-            and directions.get(own.get("direction")) == diagnosis.expected_direction
-            and directions.get(other.get("direction")) == diagnosis.alternative_direction
+            and names_registered
+            and spec.measure.strip() == registered
+            and own.get("direction") != other.get("direction")
+            and anchored
             and diagnosis.expected_direction != diagnosis.alternative_direction
             and bool(proposal.get("minimal_discriminating_intervention"))
             and bool(proposal.get("nuisance_factors")))
@@ -738,7 +779,15 @@ class LegacyResearchWorkers:
                                  failed=True, executor_status=result.status, diagnosis=diagnosis.to_dict(),
                                  protocol_dir=str(folder), experiment_digest=experiment_digest)
         measured = judge_probe(diagnosis, result.treatment, result.control)
-        gate = self._gates(card, diagnosis, spec, result, world, folder, tier)
+        # Relief applies only when the diagnosis says which registered competitor
+        # its alternative is. A discriminating registration against competitor C
+        # establishes nothing about a prose alternative A, and the two are not
+        # required to be the same thing — so an unstated link fails closed.
+        linked = str(getattr(diagnosis, "alternative_hypothesis_id", "") or "")
+        discriminated_alternative = linked if linked and linked in set(compared) else ""
+        gate = self._gates(card, diagnosis, spec, result, world, folder, tier,
+                           discriminator=discriminator,
+                           discriminated_alternative=discriminated_alternative)
         if gate.get("validation_gaps") or gate.get("dv_blind") or gate.get("world_consumed") is False:
             measured["verdict"] = "uninformative"
         evidence = {**result.to_dict(), **measured, **gate, **registration,
@@ -786,13 +835,30 @@ class LegacyResearchWorkers:
         return CandidateResult(status=status, evidence=evidence, evidence_id=eid, world_id=world.id,
                                extras={"executor_status": result.status, "protocol_dir": str(folder)})
 
-    def _gates(self, card, diagnosis, spec, result, world, folder, tier):
+    def _gates(self, card, diagnosis, spec, result, world, folder, tier, *,
+               discriminator=False, discriminated_alternative=""):
         """Fixed validation work, never a redesign loop or sign-seeking retry."""
         from ..dvsanity import dv_blind, materialize_oracle_placebo, oracle_dependent, oracle_field
         from ..dynworld import arm_separation, has_dynamics, levers_of, materialize_placebo, world_consumed
-        gate = {"validation_gaps": [], "ablation_required": ablation_required(
-            diagnosis.alternative, diagnosis.experiment, levers=levers_of(world), world_lever=diagnosis.world_lever)}
-        if gate["ablation_required"]:
+        from ..evidence import ablation_reason
+
+        reason = ablation_reason(diagnosis.alternative, diagnosis.experiment,
+                                 levers=levers_of(world), world_lever=diagnosis.world_lever)
+        gate = {"validation_gaps": [], "ablation_required": bool(reason),
+                "ablation_reason": reason}
+        # An alternative that names another lever of this world is an unshut
+        # handle, and only shutting it will do. An alternative that names no
+        # lever means the mechanism is not identified *by lever vocabulary* —
+        # and a pre-registered comparison on the same measured observable, with
+        # opposed predictions the verdict is computed from, identifies it
+        # another way. Without this distinction every design in a world with
+        # levers was permanently unidentified, and no result could corroborate.
+        if (reason == "alternative_names_no_lever_of_this_world" and discriminator
+                and discriminated_alternative):
+            gate.update(ablation_required=False,
+                        mechanism_identified="registered_discriminating_comparison",
+                        discriminated_alternative=discriminated_alternative)
+        elif reason:
             gate.update(ablation_required=True, mechanism_identified=False, cannot_corroborate=True)
             gate["missing_capability"] = "registered_competing_mechanism_ablation"
         try:

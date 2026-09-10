@@ -267,6 +267,42 @@ def ablation_required(
     return True
 
 
+def ablation_reason(
+    alternative: str,
+    experiment: str,
+    *,
+    levers: tuple[str, ...] | list[str] = (),
+    world_lever: str = "",
+) -> str:
+    """Why an ablation is required, or "" when it is not.
+
+    ``ablation_required`` collapses two different situations into one boolean:
+    an alternative that names another lever of this world and was not shut, and
+    an alternative that names no lever at all. The first is an unshut handle and
+    nothing but shutting it will do. The second means the mechanism is not
+    identified *by lever vocabulary* — which a pre-registered discriminating
+    comparison on the same measured observable can establish another way.
+    Callers that cannot tell them apart must treat every design as unidentified.
+    """
+    vocab = tuple(
+        str(item) for item in levers if str(item or "").strip() and str(item) != "none"
+    )
+    if not vocab:
+        return ""
+    alt = str(alternative or "").strip()
+    if not alt:
+        return "no_alternative_stated"
+    named = [
+        lever for lever in vocab
+        if lever != world_lever and _mentions_lever(alt, lever)
+    ]
+    if named:
+        unshut = [lever for lever in named
+                  if not _mentions_lever(experiment, lever)]
+        return f"unshut_competing_lever:{','.join(unshut)}" if unshut else ""
+    return "alternative_names_no_lever_of_this_world"
+
+
 def host_confirmation_gaps(outcome: dict[str, Any] | None) -> tuple[str, ...]:
     """Every reason this outcome cannot confirm, by name.
 
