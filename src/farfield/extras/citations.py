@@ -33,14 +33,16 @@ OPENALEX_NS = "openalex"
 # Edge kinds. Only the first two carry publication provenance.
 DIRECT_CITATION = "DIRECT_CITATION"        # source is cited by target
 FORWARD_CITATION = "FORWARD_CITATION"      # target cites source, found by expansion
-BIBLIOGRAPHIC_COUPLING = "BIBLIOGRAPHIC_COUPLING"
-CO_CITATION = "CO_CITATION"
-SEMANTIC_NEIGHBOR = "SEMANTIC_NEIGHBOR"
-TEMPORAL_NEIGHBOR = "TEMPORAL_NEIGHBOR"
+BIBLIOGRAPHIC_COUPLING = "BIBLIOGRAPHIC_COUPLING"   # two works citing the same sources
+CO_CITATION = "CO_CITATION"                        # two works cited together by a third
 
+# SEMANTIC_NEIGHBOR and TEMPORAL_NEIGHBOR were declared here and nothing ever
+# built one. A kind no code produces is a claim the runtime cannot keep, and
+# the separation below only means something if both sides of it exist. The two
+# that remain are computed from reference lists the graph already holds: no
+# request, no model call, and no way for either to become lineage.
 PROVENANCE_KINDS = frozenset({DIRECT_CITATION, FORWARD_CITATION})
-RETRIEVAL_KINDS = frozenset({BIBLIOGRAPHIC_COUPLING, CO_CITATION,
-                             SEMANTIC_NEIGHBOR, TEMPORAL_NEIGHBOR})
+RETRIEVAL_KINDS = frozenset({BIBLIOGRAPHIC_COUPLING, CO_CITATION})
 EDGE_KINDS = tuple(sorted(PROVENANCE_KINDS | RETRIEVAL_KINDS))
 
 
@@ -315,8 +317,12 @@ def expand_citations(
                     source_year=graph.year_of(cited_id),
                     target_year=graph.year_of(canonical)))
 
+    coupled, cocited = _retrieval_relations(graph)
+
     graph.telemetry = {
         "budget": budget.to_dict(),
+        "bibliographic_coupling_edges": coupled,
+        "co_citation_edges": cocited,
         "citation_nodes_requested": requested,
         "citation_nodes_fetched": fetched,
         "citation_nodes_verified": verified,
@@ -325,6 +331,62 @@ def expand_citations(
         "blocked_sources": len(graph.blocked),
     }
     return graph
+
+
+def _retrieval_relations(graph: EvolutionGraph, *, min_shared: int = 2,
+                        max_edges: int = 40) -> tuple[int, int]:
+    """Relations that help find candidates and never establish lineage.
+
+    Two works citing the same sources are bibliographically coupled; two works
+    cited together by a third are co-cited. Both say the literature treats
+    these papers as related. Neither says one developed from the other, and
+    ``transitions_from_graph`` will not read either of them — which is the
+    entire reason the kinds are kept apart.
+
+    Both come free from the reference lists already in the graph: no request,
+    no model call, and no full text.
+    """
+    resolve = graph.registry.resolve
+    known = set(graph.rows)
+    refs = {node: {resolve(str(ref)) or str(ref)
+                   for ref in (row.get("references") or ())}
+            for node, row in graph.rows.items()}
+    nodes = sorted(refs)
+
+    def link(left: str, right: str, kind: str, reported: str) -> bool:
+        first, second = sorted((left, right),
+                               key=lambda node: (graph.year_of(node), node))
+        return graph.add_edge(CitationEdge(
+            source=first, target=second, kind=kind, reported_by=reported,
+            source_year=graph.year_of(first), target_year=graph.year_of(second)))
+
+    coupled = 0
+    for index, left in enumerate(nodes):
+        if coupled >= max_edges:
+            break
+        for right in nodes[index + 1:]:
+            if coupled >= max_edges:
+                break
+            shared = refs[left] & refs[right]
+            if len(shared) >= min_shared and link(
+                    left, right, BIBLIOGRAPHIC_COUPLING,
+                    f"shared_references:{len(shared)}"):
+                coupled += 1
+
+    cocited = 0
+    for node in nodes:
+        if cocited >= max_edges:
+            break
+        together = sorted(refs[node] & known)
+        for index, left in enumerate(together):
+            if cocited >= max_edges:
+                break
+            for right in together[index + 1:]:
+                if cocited >= max_edges:
+                    break
+                if link(left, right, CO_CITATION, f"cited_together_by:{node}"):
+                    cocited += 1
+    return coupled, cocited
 
 
 # ---------------------------------------------------------------------------

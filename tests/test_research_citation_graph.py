@@ -15,7 +15,9 @@ from farfield.extras.citations import (
     FORWARD_CITATION,
     PROVENANCE_KINDS,
     RETRIEVAL_KINDS,
-    SEMANTIC_NEIGHBOR,
+    BIBLIOGRAPHIC_COUPLING,
+    CO_CITATION,
+    EDGE_KINDS,
     CitationEdge,
     EvolutionGraph,
     ExpansionBudget,
@@ -165,8 +167,8 @@ class EdgeKindTest(unittest.TestCase):
     def test_provenance_and_retrieval_kinds_are_disjoint(self):
         self.assertFalse(PROVENANCE_KINDS & RETRIEVAL_KINDS)
 
-    def test_a_semantic_neighbour_is_not_provenance(self):
-        edge = CitationEdge(source="a", target="b", kind=SEMANTIC_NEIGHBOR)
+    def test_a_retrieval_relation_is_not_provenance(self):
+        edge = CitationEdge(source="a", target="b", kind=BIBLIOGRAPHIC_COUPLING)
         self.assertFalse(edge.is_provenance)
 
     def test_only_provenance_edges_can_become_transitions(self):
@@ -174,7 +176,7 @@ class EdgeKindTest(unittest.TestCase):
         graph.add_work(work("A", "doi:10.1/a", 2018))
         graph.add_work(work("B", "doi:10.1/b", 2020))
         graph.add_edge(CitationEdge(source="doi:10.1/a", target="doi:10.1/b",
-                                    kind=SEMANTIC_NEIGHBOR))
+                                    kind=BIBLIOGRAPHIC_COUPLING))
         transitions, _ = transitions_from_graph(graph)
         self.assertEqual(transitions, [])
 
@@ -566,3 +568,79 @@ class RestoredLineageTest(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0].operator, "representation_change")
         self.assertEqual(selected[0].retrieval["applicability"], "established")
+
+
+class RetrievalRelationTest(unittest.TestCase):
+    """CASE 12: a kind nothing produces is a claim the runtime cannot keep.
+
+    Four retrieval kinds were declared and no code built one, so the separation
+    between "came after and cited it" and "the literature treats these as
+    related" only had one side. The two that can be computed from reference
+    lists already in the graph are now built; the two that nothing computed are
+    gone.
+    """
+
+    def graph(self):
+        rows = [
+            work("shared source one", "doi:10.1/s1", 2010),
+            work("shared source two", "doi:10.1/s2", 2011),
+            work("left", "doi:10.1/l", 2020, refs=["doi:10.1/s1", "doi:10.1/s2"]),
+            work("right", "doi:10.1/r", 2021, refs=["doi:10.1/s1", "doi:10.1/s2"]),
+        ]
+        return expand_citations(rows, budget=ExpansionBudget(seeds=4, depth=1))
+
+    def test_two_works_citing_the_same_sources_are_coupled(self):
+        graph = self.graph()
+        coupled = [e for e in graph.edges if e.kind == BIBLIOGRAPHIC_COUPLING]
+        self.assertEqual([(e.source, e.target) for e in coupled],
+                         [("doi:10.1/l", "doi:10.1/r")])
+        self.assertEqual(coupled[0].reported_by, "shared_references:2")
+        self.assertEqual(graph.telemetry["bibliographic_coupling_edges"], 1)
+
+    def test_two_works_cited_together_are_co_cited(self):
+        graph = self.graph()
+        cocited = [e for e in graph.edges if e.kind == CO_CITATION]
+        self.assertEqual([(e.source, e.target) for e in cocited],
+                         [("doi:10.1/s1", "doi:10.1/s2")])
+        self.assertGreaterEqual(graph.telemetry["co_citation_edges"], 1)
+
+    def test_a_single_shared_source_is_not_coupling(self):
+        graph = expand_citations([
+            work("source", "doi:10.1/s", 2010),
+            work("left", "doi:10.1/l", 2020, refs=["doi:10.1/s"]),
+            work("right", "doi:10.1/r", 2021, refs=["doi:10.1/s"]),
+        ], budget=ExpansionBudget(seeds=3, depth=1))
+        self.assertEqual([e for e in graph.edges if e.kind == BIBLIOGRAPHIC_COUPLING], [])
+
+    def test_no_retrieval_relation_becomes_a_transition(self):
+        graph = self.graph()
+        self.assertTrue([e for e in graph.edges if e.kind in RETRIEVAL_KINDS])
+        transitions, _ = transitions_from_graph(graph)
+        for transition in transitions:
+            self.assertIn(transition.provenance["lineage"], {"target.references"})
+        considered = graph.telemetry.get("extraction", {}).get(
+            "provenance_edges_considered", 0)
+        self.assertEqual(considered, len(graph.provenance_edges()))
+
+    def test_every_declared_kind_is_actually_built(self):
+        """The check that would have caught four ghost kinds.
+
+        Behavioural, not textual: one expansion over a fixture shaped to
+        produce every kind, then a comparison against the declared vocabulary.
+        A kind nothing can build fails here rather than sitting in a constant.
+        """
+        seeds = [
+            work("shared source one", "doi:10.1/s1", 2010),
+            work("shared source two", "doi:10.1/s2", 2011),
+            work("left", "doi:10.1/l", 2020, refs=["doi:10.1/s1", "doi:10.1/s2"]),
+            work("right", "doi:10.1/r", 2021, refs=["doi:10.1/s1", "doi:10.1/s2"]),
+        ]
+        graph = expand_citations(
+            seeds,
+            fetch_citing=lambda keys: [FreshWork.from_dict(
+                work("citer", "doi:10.1/c", 2023, refs=["doi:10.1/l"]))]
+            if keys == ["doi:10.1/l"] else [],
+            budget=ExpansionBudget(seeds=4, depth=1))
+        built = {edge.kind for edge in graph.edges}
+        self.assertEqual(built, set(EDGE_KINDS),
+                         f"declared but never built: {set(EDGE_KINDS) - built}")
