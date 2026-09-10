@@ -42,8 +42,9 @@ import json
 import random
 import shutil
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .world import WorldFixture, digest_files, schema_family
 
@@ -578,6 +579,10 @@ def _load_program(root: Path) -> dict[str, Any]:
             features.add("divergent")
     if updates:
         features.add("updates")
+    # Whether an outcome was recorded at all, which is a different question
+    # from whether that outcome is independent of the gate (`oracle`).
+    if any("task_return" in row for row in updates):
+        features.add("task_return")
     oracle = payload.get("oracle") if isinstance(payload.get("oracle"), dict) else {}
     # An oracle the gate never saw (hidden tests) makes false acceptance a
     # real quantity; an evaluator's own score does not.
@@ -848,7 +853,14 @@ def _lever_graph(
         }
     if lever == "rewire":
         out = []
-        pool = list({n for e in edges for n in e})
+        # sorted, not list(set): the generator is seeded from the world digest
+        # but `choice` indexes into this pool, and a set of string node ids
+        # iterates in an order that changes between processes. Two runs of the
+        # same simulation returned different graphs and different
+        # `report_digest`s — an experiment whose result depends on which
+        # process ran it cannot support a claim, and the whole design rests on
+        # a replay reproducing what happened.
+        pool = sorted({n for e in edges for n in e})
         for a, b in edges:
             if rng.random() < intensity and pool:
                 out.append((a, rng.choice(pool)))
@@ -1015,6 +1027,66 @@ def _lever_traces(
 # replayed history cannot feel an intervention (its acceptances are facts),
 # so these are the handles that ask about *its* dynamics; interventional
 # levers only subsample it.
+@dataclass(frozen=True)
+class WorldCapability:
+    """One thing a schema can do, with the payload it needs, in one object.
+
+    Every defect this registry replaces came from the same shape: a name
+    written in one place, the payload it needs written in another, and the code
+    that performs it in a third, with nothing tying the three together.
+
+    A world advertised `cycle_fraction` on a freeze carrying no `on_cycle`
+    field, so the measure read zero in every stratum and a live hypothesis was
+    spent predicting that it would move. A world advertised `freeze_validators`
+    as its one manipulable handle when the field its effect is read through was
+    absent, so the lever applied cleanly and changed nothing at any intensity.
+    Both were fixed by adding a fourth table — which made the surface larger
+    rather than smaller.
+
+    Here the name cannot be written without a body, the body cannot be
+    registered without saying what it needs, and what is advertised is derived
+    by asking. "Advertised but inert" stops being a bug to detect and becomes a
+    state with nowhere to live.
+
+    ``requires`` are features the payload must all carry; ``requires_any`` is
+    satisfied by any one of them, for a measure with two possible sources.
+    """
+
+    name: str
+    requires: tuple[str, ...] = ()
+    requires_any: tuple[str, ...] = ()
+    meaning: str = ""
+
+    def available(self, features: Any) -> bool:
+        have = set(features or ())
+        if not set(self.requires).issubset(have):
+            return False
+        return not self.requires_any or bool(have & set(self.requires_any))
+
+
+@dataclass(frozen=True)
+class Measure(WorldCapability):
+    """A number a schema reports, and the payload that lets it be computed."""
+
+    compute: Callable[[dict[str, Any]], float] | None = None
+
+
+@dataclass(frozen=True)
+class Lever(WorldCapability):
+    """A handle on a payload. ``requires`` is what its effect is *read
+    through*, not what it writes — gating `freeze_validators` on the field it
+    writes is exactly how an inert intervention came to be advertised."""
+
+    apply: Callable[[list[dict[str, Any]], float, random.Random,
+                     dict[str, Any]], list[dict[str, Any]]] | None = None
+
+
+# Observational handles on a replayed history. `contrast:<stratum>` splits
+# the records the world already recorded: treatment = records in the
+# stratum, control = the rest, matched on the world's natural strata. A
+# replayed history cannot feel an intervention (its acceptances are facts),
+# so these are the handles that ask about *its* dynamics; interventional
+# levers only subsample it.
 PROGRAM_CONTRASTS: dict[str, tuple[str, str]] = {
     # name -> (feature required, one-line meaning)
     "contrast:validator_write": (
@@ -1048,101 +1120,125 @@ def _in_contrast(row: dict[str, Any], lever: str, state: dict[str, Any]) -> bool
     if lever == "contrast:divergent":
         return bool(row.get("divergent"))
     if lever == "contrast:heavy_episode":
-        counts = state.get("_episode_counts")
-        if counts is None:
-            counts = Counter(str(r.get("episode") or "") for r in (state.get("updates") or []))
-            state["_episode_counts"] = counts
-        return counts.get(str(row.get("episode") or ""), 0) >= 4
+        return bool(row.get("episode_burden") or 0) >= 4 or int(
+            (state.get("episode_counts") or {}).get(str(row.get("episode") or ""), 0)) >= 4
     return False
 
 
-# What each program observable needs the payload to carry. The lever table
-# already refuses to advertise a handle the payload cannot feel; an observable
-# nobody can move is the same promise broken from the other side. A live run
-# spent one of its two hypotheses predicting a rise in `cycle_fraction` on a
-# freeze where no row carries `on_cycle`, so the measure was zero in every
-# stratum and the hypothesis could never have been answered.
-PROGRAM_OBSERVABLE_FEATURES: dict[str, tuple[str, ...]] = {
-    "n_updates": (),
-    "accepted_fraction": ("updates",),
-    "cycle_fraction": ("cycles",),
-    "mean_accepted_return": ("oracle",),
-    # False acceptance needs the independent oracle, or the divergence proxy
-    # when the world has none. Either satisfies it; neither present, and the
+def _accepted(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row for row in (state.get("updates") or []) if row.get("accepted")]
+
+
+def _false_accepts(state: dict[str, Any]) -> int:
+    accepted = _accepted(state)
+    if state.get("oracle_independent"):
+        return sum(1 for row in accepted if float(row.get("task_return") or 0.0) == 0.0)
+    return sum(1 for row in accepted if row.get("divergent"))
+
+
+PROGRAM_MEASURES: tuple[Measure, ...] = (
+    Measure("n_updates",
+            compute=lambda s: float(len(s.get("updates") or ()))),
+    Measure("accepted_fraction", requires=("updates",),
+            compute=lambda s: len(_accepted(s)) / max(1, len(s.get("updates") or ()))),
+    Measure("cycle_fraction", requires=("cycles",),
+            compute=lambda s: sum(1 for r in (s.get("updates") or ()) if r.get("on_cycle"))
+            / max(1, len(s.get("updates") or ()))),
+    # `oracle` means the outcome is independent of the gate, which is a
+    # different question from whether an outcome was recorded at all. Requiring
+    # it here dropped this measure from a world that records returns under its
+    # own gate, where the mean is still a real number about that world.
+    Measure("mean_accepted_return", requires=("task_return",),
+            compute=lambda s: sum(float(r.get("task_return") or 0.0)
+                                  for r in _accepted(s)) / max(1, len(_accepted(s)))),
+    # False acceptance is gate-accepted and oracle-rejected when the world
+    # carries an oracle the gate never saw; a world without one falls back to
+    # the replay-divergence proxy. Either source will do; neither, and the
     # measure has nothing to read.
-    "false_accept_fraction": ("oracle", "divergent"),
-}
+    Measure("false_accept_fraction", requires_any=("oracle", "divergent"),
+            compute=lambda s: _false_accepts(s) / max(1, len(_accepted(s)))),
+)
 
 
-def _observables_program(state: dict[str, Any]) -> tuple[str, ...]:
-    """Only advertise measures the payload can actually produce."""
+def _apply_dropout(updates, intensity, rng, state):
+    return _keep(updates, intensity, rng)
+
+
+def _apply_replay_gate(updates, intensity, rng, state):
+    # Intercept the write–read dependency cycle at runtime: an update that
+    # mutates its own validator is replayed against the frozen pre-update state
+    # before acceptance. Replay catches divergence; non-divergent self-edits
+    # keep their acceptance.
+    for row in updates:
+        if not (row.get("on_cycle") and row.get("accepted")):
+            continue
+        if row.get("divergent") and rng.random() < intensity:
+            row["accepted"] = False
+    return updates
+
+
+def _apply_freeze_validators(updates, intensity, rng, state):
+    # Validators become immutable: the update's own edit to its checker never
+    # lands, so a divergent self-approval loses its green light.
+    for row in updates:
+        if not row.get("validator_writes"):
+            continue
+        if rng.random() < intensity:
+            row["validator_writes"] = []
+            if row.get("on_cycle"):
+                row["on_cycle"] = False
+                if row.get("divergent"):
+                    row["accepted"] = False
+    return updates
+
+
+def _apply_stratum(lever: str):
+    def run(updates, intensity, rng, state):
+        return [row for row in updates if _in_contrast(row, lever, state)]
+    return run
+
+
+PROGRAM_LEVERS: tuple[Lever, ...] = (
+    Lever("dropout", apply=_apply_dropout,
+          meaning="subsample the recorded history"),
+    Lever("replay_gate", requires=("cycles",), apply=_apply_replay_gate,
+          meaning="replay a self-mutating update against its pre-update state"),
+    # Freezing validators lands on `validator_writes` and `on_cycle`; only
+    # `on_cycle` is read by any measure, so a payload without cycles cannot
+    # feel this lever however cleanly it applies.
+    Lever("freeze_validators", requires=("validator_writes", "cycles"),
+          apply=_apply_freeze_validators,
+          meaning="the update's edit to its own checker never lands"),
+) + tuple(
+    Lever(name, requires=(feature,), apply=_apply_stratum(name), meaning=meaning)
+    for name, (feature, meaning) in PROGRAM_CONTRASTS.items()
+)
+
+
+def _observe_program(state: dict[str, Any]) -> dict[str, float]:
+    """Only the measures this payload can actually produce."""
     features = _string_set(state.get("features") or ())
-    computed = _observe_program(state)
-    return tuple(sorted(
-        name for name in computed
-        if not PROGRAM_OBSERVABLE_FEATURES.get(name, ())
-        or features & set(PROGRAM_OBSERVABLE_FEATURES[name])))
+    return {row.name: float(row.compute(state))
+            for row in PROGRAM_MEASURES if row.available(features)}
 
 
 def _levers_program(state: dict[str, Any]) -> tuple[str, ...]:
-    """Only advertise handles the payload can feel.
-
-    Gating and validator freezing act on write–read dependency cycles;
-    a history without any self-mutating update cannot feel them. Contrasts
-    are advertised whenever the stratum exists on both sides.
-    """
+    """Only the handles this payload can actually feel."""
     features = _string_set(state.get("features") or ())
-    levers = ["dropout"]
-    if "cycles" in features:
-        levers.append("replay_gate")
-    # Freezing validators lands on `validator_writes` and `on_cycle`; of those
-    # only `on_cycle` is read by any observable. Gating on `validator_writes`
-    # gated the lever on the field it *writes* rather than the field its effect
-    # is *read through*, so on a freeze without cycles it was advertised,
-    # applied, and moved nothing at any intensity — an intervention that cannot
-    # be felt, offered as the one manipulable handle this world had.
-    if "validator_writes" in features and "cycles" in features:
-        levers.append("freeze_validators")
-    for name, (feature, _meaning) in PROGRAM_CONTRASTS.items():
-        if feature in features:
-            levers.append(name)
-    return tuple(levers)
+    return tuple(row.name for row in PROGRAM_LEVERS if row.available(features))
 
 
 def _lever_program(
     state: dict[str, Any], lever: str, intensity: float, rng: random.Random
 ) -> dict[str, Any]:
-    updates = [dict(row) for row in (state.get("updates") or [])]
-    if lever == "dropout":
-        updates = _keep(updates, intensity, rng)
-    elif is_contrast(lever):
-        # The stratum itself; the scout's response is stratum minus whole.
-        updates = [row for row in updates if _in_contrast(row, lever, state)]
-    elif lever == "replay_gate":
-        # Intercept the write–read dependency cycle at runtime: an update
-        # that mutates its own validator is replayed against the frozen
-        # pre-update state before acceptance. Replay catches divergence;
-        # non-divergent self-edits keep their acceptance.
-        for row in updates:
-            if not (row.get("on_cycle") and row.get("accepted")):
-                continue
-            if row.get("divergent") and rng.random() < intensity:
-                row["accepted"] = False
-    elif lever == "freeze_validators":
-        # Validators become immutable: the update's own edit to its
-        # checker never lands, so a divergent self-approval loses its
-        # green light.
-        for row in updates:
-            if not row.get("validator_writes"):
-                continue
-            if rng.random() < intensity:
-                row["validator_writes"] = []
-                if row.get("on_cycle"):
-                    row["on_cycle"] = False
-                    if row.get("divergent"):
-                        row["accepted"] = False
-    else:
+    """Apply the registered handle. There is nowhere here to name a lever the
+    registry does not define, which is what the old if/elif chain allowed."""
+    known = {row.name: row for row in PROGRAM_LEVERS}
+    entry = known.get(str(lever or ""))
+    if entry is None or entry.apply is None:
         raise DynamicsUnavailable(f"unknown program lever {lever!r}")
+    updates = entry.apply([dict(row) for row in (state.get("updates") or [])],
+                          intensity, rng, state)
     return {
         "cells": list(state.get("cells") or []),
         "validators": [dict(row) for row in (state.get("validators") or [])],
@@ -1199,7 +1295,6 @@ _BRIDGES: dict[str, dict[str, Any]] = {
         "apply": _lever_program,
         "levers": ("dropout",),
         "levers_for": _levers_program,
-        "observables_for": _observables_program,
     },
 }
 _BRIDGES["undirected_named_graph"] = _BRIDGES["undirected_graph"]
@@ -1397,18 +1492,15 @@ def compose_simulation(fixture: WorldFixture | None) -> dict[str, Any]:
 
 
 def observables_of(fixture: WorldFixture) -> tuple[str, ...]:
-    """Measures this world can produce, not every key its observer computes.
+    """Measures this world can produce.
 
-    A bridge may declare a per-schema gate; without one, every computed key is
-    advertised as before.
+    The observer returns only what the payload supports, so this is its keys —
+    there is no separate gate to fall out of step with it.
     """
     bridge = _bridge_of(fixture)
     if not bridge:
         return ()
     state = bridge["load"](fixture.root)
-    gate = bridge.get("observables_for")
-    if callable(gate):
-        return tuple(sorted(gate(state)))
     return tuple(sorted(bridge["observe"](state)))
 
 
