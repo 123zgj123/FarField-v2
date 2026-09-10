@@ -94,3 +94,94 @@ class ReachabilityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventVocabularyTest(unittest.TestCase):
+    """An event nothing emits is a state transition nobody asks for.
+
+    Sixteen of thirty-nine declared event types are emitted by no production
+    code, and one of them — `TheorySupported` — accepted a bare assertion that
+    a hypothesis was supported, wrote it onto the row, and survived the derived
+    refresh because that refresh only overwrites a status when admitted
+    evidence exists. A hypothesis could be believed on the strength of nothing,
+    through the single writer, inside the trusted kernel.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from farfield.extras.openworld.reachability import event_vocabulary
+
+        cls.vocab = event_vocabulary()
+
+    def test_every_emitted_event_has_a_reducer_branch(self):
+        self.assertEqual(self.vocab["emitted_without_a_reducer_branch"], [],
+                         "these are constructed and then change no state")
+
+    def test_every_emitted_event_is_declared(self):
+        self.assertEqual(self.vocab["emitted_but_undeclared"], [])
+
+    def test_every_reducer_branch_is_declared(self):
+        self.assertEqual(self.vocab["reduced_without_a_declaration"], [])
+
+    def test_no_unemitted_branch_goes_undeclared(self):
+        self.assertEqual(
+            self.vocab["undeclared_unemitted"], [],
+            "these reducer branches are reachable by no emitter; declare each "
+            "in DECLARED_UNEMITTED with a reason, or remove the branch")
+
+    def test_no_declaration_outlives_its_silence(self):
+        self.assertEqual(self.vocab["stale_unemitted_declarations"], [],
+                         "declared as unemitted and in fact emitted")
+
+
+class DerivedBeliefTest(unittest.TestCase):
+    """Belief follows evidence. No event may shortcut that."""
+
+    def state(self):
+        from farfield.extras.openworld.events import make_event
+        from farfield.extras.openworld.reducer import apply_events
+        from farfield.extras.openworld.state import ScientificState
+
+        root = "does X improve Y in Z?"
+        return apply_events(ScientificState(goal=root), [
+            make_event("ContractSet", {"root_question": root}),
+            make_event("QuestionCreated", {"id": "Q1", "text": root}),
+            make_event("TheoryCreated", {"id": "T1", "question_id": "Q1", "text": "m"}),
+        ])
+
+    def apply(self, state, kind, payload):
+        from farfield.extras.openworld.events import make_event
+        from farfield.extras.openworld.reducer import apply_events
+
+        return apply_events(state, [make_event(kind, payload)])
+
+    def test_a_bare_belief_assertion_changes_no_belief(self):
+        for kind in ("TheorySupported", "TheoryWeakened", "TheoryContradicted"):
+            with self.subTest(event=kind):
+                after = self.apply(self.state(), kind, {"id": "T1"})
+                theory = after.theories[0]
+                self.assertIsNone(theory.get("status"),
+                                  "a hypothesis was believed on the strength of nothing")
+                self.assertEqual(
+                    int(after.metrics.get(
+                        "belief_assertion_without_evidence_refused") or 0), 1)
+
+    def test_a_belief_event_cannot_conjure_a_hypothesis(self):
+        after = self.apply(self.state(), "TheorySupported", {"id": "nobody"})
+        self.assertEqual([row.get("id") for row in after.theories], ["T1"])
+        self.assertEqual(
+            int(after.metrics.get("belief_event_for_unknown_hypothesis_refused") or 0), 1)
+
+    def test_an_evidence_link_is_still_recorded(self):
+        after = self.apply(self.state(), "TheorySupported",
+                           {"id": "T1", "evidence_id": "E1"})
+        self.assertEqual(after.theories[0].get("evidence_ids"), ["E1"])
+        self.assertIsNone(after.theories[0].get("status"),
+                          "a link is not a verdict; derivation decides")
+
+    def test_debt_cannot_be_set_by_an_event(self):
+        """It is derived after every batch, so the payload is discarded."""
+        before = dict(self.state().debt)
+        after = self.apply(self.state(), "DebtUpdated",
+                           {"debt": {"contradiction_debt": 999, "quality_gap": 0}})
+        self.assertEqual(dict(after.debt), before)

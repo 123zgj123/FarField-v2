@@ -117,3 +117,90 @@ def reachable(root: Path | None = None) -> dict[str, Any]:
         "basis": "static imports from real entry points; a module kept alive only "
                  "by its own tests is not reached",
     }
+
+
+# ---------------------------------------------------------------------------
+# Event vocabulary
+# ---------------------------------------------------------------------------
+
+# Event types the reducer handles that no production code emits. Each branch is
+# a state transition the runtime can perform and never asks for, so each needs a
+# reason — and the reason must not be "we might one day", which is how
+# `TheorySupported` came to accept a belief assertion backed by no evidence at
+# all, inside the single writer.
+DECLARED_UNEMITTED: dict[str, str] = {
+    "TheorySupported": "belief is derived from admitted evidence; this branch now "
+                       "only records an evidence link and refuses a bare assertion",
+    "TheoryWeakened": "as TheorySupported",
+    "TheoryContradicted": "as TheorySupported",
+    "DebtUpdated": "debt is derived and recomputed after every batch, so this "
+                   "branch cannot change anything; kept for old logs",
+    "ReviewRepairRefused": "the refusal counter is written by ReviewResolved; this "
+                           "would double-count it",
+    "ContradictionDetected": "for a contradiction the runtime cannot derive, such as "
+                             "one with verified literature; nothing reports one yet",
+    "ContractAmended": "amendment path exercised by tests only; no worker amends a "
+                       "contract mid-project",
+    "QuestionBlocked": "the reducer blocks questions directly inside other branches",
+    "LineageMerged": "lineages fork and retire; nothing merges them",
+    "WorldDeprecated": "no path deprecates an attested world",
+    "CapabilityProposed": "harness capability lifecycle, status partial in the register",
+    "CapabilityTrusted": "as CapabilityProposed",
+    "CapabilityRevoked": "as CapabilityProposed",
+    "CapabilityDeprecated": "as CapabilityProposed",
+    "HarnessAdmitted": "as CapabilityProposed",
+    "DecisionRecorded": "the decision journal is written directly by the pivot "
+                        "branch; no tick records why it chose what it chose",
+}
+
+
+def _emitted_types(root: Path) -> dict[str, list[str]]:
+    """Event types constructed anywhere under `root`, by AST rather than by grep.
+
+    A regex over `make_event("X"` misses every call that wraps its arguments
+    onto the next line, which is most of the interesting ones.
+    """
+    found: dict[str, set[str]] = {}
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in {"make_event", "Event"}:
+                continue
+            kind = None
+            if node.args and isinstance(node.args[0], ast.Constant):
+                kind = node.args[0].value
+            for keyword in node.keywords:
+                if keyword.arg in {"event_type", "kind"} and isinstance(
+                        keyword.value, ast.Constant):
+                    kind = keyword.value.value
+            if isinstance(kind, str):
+                found.setdefault(kind, set()).add(str(path))
+    return {kind: sorted(paths) for kind, paths in found.items()}
+
+
+def event_vocabulary(root: Path | None = None) -> dict[str, Any]:
+    """Declared event types against what emits them and what reduces them."""
+    import re
+
+    from .events import EVENT_TYPES
+
+    root = Path(root or Path(__file__).resolve().parents[2])
+    reducer = (root / "extras/openworld/reducer.py").read_text(encoding="utf-8")
+    branches = set(re.findall(r'kind == "([A-Za-z]+)"', reducer))
+    emitted = _emitted_types(root)
+    declared = set(EVENT_TYPES)
+    return {
+        "rule": "event-vocabulary-v1",
+        "declared": sorted(declared),
+        "emitted": {kind: paths for kind, paths in sorted(emitted.items())},
+        "reduced": sorted(branches),
+        "emitted_without_a_reducer_branch": sorted(set(emitted) - branches),
+        "reduced_without_a_declaration": sorted(branches - declared),
+        "emitted_but_undeclared": sorted(set(emitted) - declared),
+        "unemitted": sorted(declared & branches - set(emitted)),
+        "undeclared_unemitted": sorted(
+            declared & branches - set(emitted) - set(DECLARED_UNEMITTED)),
+        "stale_unemitted_declarations": sorted(set(DECLARED_UNEMITTED) & set(emitted)),
+    }

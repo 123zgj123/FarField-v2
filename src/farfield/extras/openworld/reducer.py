@@ -508,18 +508,34 @@ def rebuild_state(log: EventLog) -> ScientificState:
 
 
 def _touch_theory(state: ScientificState, payload: Mapping[str, Any], *, status: str) -> None:
+    """Link evidence to a hypothesis. Belief is derived, and stays derived.
+
+    These branches used to write ``status`` straight onto the row, and the
+    derived refresh only overwrites a status when admitted evidence exists —
+    so a bare ``TheorySupported`` with an empty payload left a hypothesis
+    marked *supported* on the strength of nothing at all, through the single
+    writer, inside the trusted kernel. Nothing in this repository emits one;
+    the branch accepting it was the hole.
+
+    What the payload can legitimately carry is a link to an EvidenceID. That
+    is recorded, and `refresh_research_views` decides what it means. An event
+    that names no evidence changes no belief, and says so.
+    """
     tid = str(payload.get("id") or payload.get("theory_id") or payload.get("text") or "")
+    eid = str(payload.get("evidence_id") or "")
+    if not tid:
+        return
     for row in state.theories:
         if str(row.get("id") or row.get("text") or "") == tid:
-            row["status"] = status
-            if payload.get("evidence_id"):
-                row.setdefault("evidence_ids", [])
-                if isinstance(row["evidence_ids"], list):
-                    eid = str(payload.get("evidence_id"))
-                    if eid not in row["evidence_ids"]:
-                        row["evidence_ids"].append(eid)
+            if eid:
+                links = row.setdefault("evidence_ids", [])
+                if isinstance(links, list) and eid not in links:
+                    links.append(eid)
+            else:
+                state.metrics["belief_assertion_without_evidence_refused"] = int(
+                    state.metrics.get("belief_assertion_without_evidence_refused") or 0) + 1
             return
-    row = dict(payload)
-    row["status"] = status
-    row.setdefault("epistemic", "GENERATED")
-    state.theories.append(row)
+    # Creating a hypothesis is `TheoryCreated`'s job. A belief event for an
+    # unknown hypothesis would otherwise conjure one, already believed.
+    state.metrics["belief_event_for_unknown_hypothesis_refused"] = int(
+        state.metrics.get("belief_event_for_unknown_hypothesis_refused") or 0) + 1
