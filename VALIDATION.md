@@ -304,14 +304,19 @@ the registered measurement identifier explicit in the writer prompt while
 retaining the rejection guard. This last prompt change has offline regression
 coverage and has not been retried live.
 
-The project-management layer added in this round is **offline validated only**.
-No live model or live world run exercised the contract, quality, review,
-redesign, pivot or termination paths; the trajectory world is a deterministic
-script. Root-question alignment is a lexical anchor guard and cannot recognise
-that two phrasings share an estimand. Quality dimensions are ordinal
-bookkeeping, calibrated against nothing. Efficiency thresholds in the
-long-horizon tests are floors measured against the current controller, not
-targets derived from any external standard.
+The project-management layer was offline-validated when it was written. It has
+since been exercised live: thirteen bounded Iris sessions produced
+`ContractSet`, `ReviewRecorded`, `DesignRevised` and `LineageForked` events and
+terminated through the declared statuses. **`PROJECT_PIVOT` has still never
+fired in a live run** and remains offline-validated only, as does the
+deterministic trajectory world used by the long-horizon tests.
+
+The limits of the mechanisms themselves are unchanged by any of that.
+Root-question alignment is a lexical anchor guard and cannot recognise that two
+phrasings share an estimand. Quality dimensions are ordinal bookkeeping,
+calibrated against nothing. Efficiency thresholds in the long-horizon tests are
+floors measured against the current controller, not targets derived from any
+external standard.
 
 Open validation requirements remain: diverse real mission parity, a useful
 grounded trajectory corpus, independent replication worlds with suitable

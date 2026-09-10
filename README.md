@@ -186,10 +186,10 @@ This exact-instance reproduction does not establish transfer to a new world.
 
 The [validation record](VALIDATION.md) maps the requested behaviors to tests and separates offline regressions from live observations.
 
-- **Offline:** 1,311 tests, including 6 skips — main suite, 30 contract tests, historical regressions, eight capability-level behavioural scenarios, and long-horizon trajectory guarantees.
-- **Project-management layer:** offline validated only. No live model or live world run has exercised the contract, quality, review, redesign, pivot or termination paths.
-- **Live integration:** bounded Iris sessions retrieved real papers, generated structured hypotheses, and reached diagnosis/probe construction. The final recorded segment blocked a metric mismatch before execution and produced a failure-reframe branch—not WORLD probe evidence or a verified discovery.
-- **Trajectory coverage:** extraction and structural retrieval exist, but a broad grounded transition corpus and learned operator-selection distribution do not.
+- **Offline:** 1,619 tests, including 6 skips — main suite, contract tests, historical regressions, eight capability-level behavioural scenarios, long-horizon trajectory guarantees, and audits of module reachability, event vocabulary, state-field ownership and scheduler levers.
+- **Project-management layer:** exercised live. Thirteen bounded Iris sessions produced `ContractSet`, `ReviewRecorded`, `DesignRevised` and `LineageForked` events and terminated through the declared statuses. `PROJECT_PIVOT` has **not** fired in a live run and remains offline-validated only.
+- **Live integration:** bounded Iris sessions retrieved real papers, built a citation graph, generated structured hypotheses, executed registered probes and ran the review/redesign repair loop. One probe returned a positive result and one was inconclusive; the runtime scored the registered direction and refused to corroborate beyond what the evidence supported. No verified discovery is claimed.
+- **Trajectory coverage:** a bounded citation expansion builds the transition library, and one live mission produced a hypothesis carrying `source_trajectories_used` with an exactly-matched applicability condition. What is **not** established is that a trajectory-conditioned hypothesis is better than one generated without it; nothing here measures that.
 - **Experimental coverage:** catalog and acquisition support are limited. Registered identities do not fully prove that arbitrary generated code implements its prose claim.
 - **Estimation:** belief scores are deterministic bookkeeping, not calibrated Bayesian confidence; scheduler priorities are heuristics, not measured information gain.
 - **Self-improvement:** policy admission is enforced locally; beneficial live research-policy RSI has not been demonstrated.

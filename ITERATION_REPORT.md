@@ -3,11 +3,15 @@
 Baseline before this work: 1218 unit/contract/regression tests passing, 1/8
 behavioural research scenarios passing, no long-horizon evaluation.
 
-Current: 1311 tests passing, 8/8 behavioural scenarios, 16 long-horizon
-trajectory guarantees, and a capability-metric harness.
+After the final round: **1619 tests passing** (6 skipped), 8/8 behavioural
+scenarios, 18 long-horizon trajectory guarantees, twenty capabilities
+implemented with firing probes and two partial with stated limits.
 
-Everything below is **offline validated**. No live model run has been performed
-in this work; see *Remaining limitations*.
+Rounds 1–6 below are **offline validated**; each states so where it applies.
+Rounds 7 onward were driven by bounded live runs against `gpt-5.6-sol` on the
+attested Fisher Iris world, and say which claims those runs establish and which
+they do not. Every per-round "Tests: N passing" line is the count at the end of
+that round, not a claim about the repository today.
 
 ---
 
