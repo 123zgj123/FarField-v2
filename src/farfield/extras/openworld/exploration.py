@@ -414,6 +414,64 @@ def paper_relevance(root_question: str, paper: Mapping[str, Any]) -> dict[str, A
             "basis": "lexical_anchor_guard_not_subject_understanding"}
 
 
+def search_topic(root_question: str, question_text: str = "",
+                 client: Any = None) -> dict[str, Any]:
+    """Turn a research question into the phrase an index should be asked for.
+
+    Retrieval was handed the question verbatim, and the phrase builder takes
+    adjacent word pairs in sentence order. "does petal geometry separate iris
+    species better than sepal geometry?" therefore searched for
+    ``all:"does petal"`` — and a live run surveyed conic programming,
+    nanophotonics and cut-flower senescence for a question about iris
+    morphometrics. "iris species", the one phrase that names the subject,
+    was never queried.
+
+    One call turns the question into a short noun phrase naming the objects
+    and the phenomenon. The phrase only chooses what to *ask for*: everything
+    retrieved is still verified and still screened for subject. Without a
+    client the question is returned unchanged, which is the previous
+    behaviour and no worse than it was.
+    """
+    fallback = {"topic": root_question, "basis": "root_question_verbatim"}
+    if client is None or not root_question.strip():
+        return fallback
+    import json
+
+    from ..llm import LLMUnavailable, complete_call
+
+    try:
+        completion = complete_call(
+            client,
+            json.dumps({"root_question": root_question,
+                        "current_question": question_text}, ensure_ascii=False),
+            purpose="retrieval_search_topic",
+            system=(
+                "Name what this question is about, as a search phrase for a "
+                "scientific index. Return JSON {topic: string, subject: string}. "
+                "`subject` is the object of study; `topic` is three to eight "
+                "words naming that subject and the phenomenon, using the "
+                "field's own terms. No question words, no comparatives, no "
+                "punctuation. Do not broaden to a neighbouring field."
+            ),
+        )
+    except (LLMUnavailable, ValueError, KeyError, TypeError) as exc:
+        return {**fallback, "basis": f"unavailable:{exc}"}
+    text = str(getattr(completion, "text", "") or "").strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = "\n".join(text.splitlines()[1:-1])
+    try:
+        payload = json.loads(text)
+        topic = " ".join(str(payload.get("topic") or "").split())
+        subject = " ".join(str(payload.get("subject") or "").split())
+    except (ValueError, TypeError, AttributeError):
+        return {**fallback, "basis": "malformed"}
+    words = topic.split()
+    if not 2 <= len(words) <= 12:
+        return {**fallback, "basis": "unusable_length"}
+    return {"topic": topic, "subject": subject, "root_question": root_question,
+            "basis": "model_named_subject_and_phenomenon", "epistemic": "GENERATED"}
+
+
 def subject_screen(root_question: str, rows: Any, client: Any = None) -> dict[str, Any]:
     """Ask once whether each retrieved paper is about the question's subject.
 

@@ -222,8 +222,20 @@ class LegacyResearchWorkers:
                          if row.get("id") == action.target), {})
         try:
             feed = self.feed if self.feed is not None else CompositeFeed()
+            # Ask the index for the subject, not for the question's wording.
+            # A phrase builder working in sentence order turned this question
+            # into `all:"does petal"`, and the survey came back with conic
+            # programming. What the phrase changes is only what is asked for:
+            # every result is still verified and still screened for subject.
+            from .exploration import search_topic
+
+            root_question = str(state.get("contract", {}).get("root_question") or topic)
+            search = search_topic(root_question, str(question.get("text") or ""),
+                                  client=self.client)
+            query_topic = str(search.get("topic") or topic)
             harvest = harvest_survey(feed,
-                                     topic, str(question.get("text") or topic), topic=topic,
+                                     query_topic, str(question.get("text") or query_topic),
+                                     topic=query_topic,
                                      claim=str(action.extra.get("claim") or ""),
                                      fetcher=kwargs.get("fetcher"))
             if not harvest.works:
@@ -251,6 +263,7 @@ class LegacyResearchWorkers:
                         "read_first": [work.cite_id() for work in works], "spans": spans,
                         "prior": prior.to_dict() if prior else None, "path": str(path),
                         "source_documents": documents, "document_gaps": document_gaps,
+                        "search_topic": search,
                         **harvest.to_dict()}
             if action.extra.get("extract_trajectories"):
                 # Keyword search finds seeds. A citation graph is built by

@@ -191,9 +191,20 @@ def object_survey_phrases(topic: str) -> tuple[str, ...]:
     names such as RNA. Do not bridge prepositions into invented noun phrases.
     """
     words = re.findall(r"[^\W_]+(?:[-'][^\W_]+)*", topic, flags=re.UNICODE)
+    # A research question opens with function words, and a bigram built across
+    # them is not a retrieval phrase. "does petal geometry separate iris
+    # species better than sepal geometry?" yielded "does petal" as its first
+    # phrase and never reached "iris species" at all, so a live survey searched
+    # for `all:"does petal"` and came back with conic programming and
+    # nanophotonics.
     stop = {"a", "an", "the", "and", "or", "of", "on", "in", "for", "to",
             "with", "under", "over", "from", "by", "into", "using", "versus",
-            "vs", "is", "are", "research", "study", "investigate"}
+            "vs", "is", "are", "research", "study", "investigate",
+            "does", "do", "did", "can", "could", "should", "would", "will",
+            "how", "why", "what", "which", "when", "whether", "if",
+            "better", "worse", "more", "less", "than", "then", "compared",
+            "there", "their", "its", "it", "this", "that", "these", "those",
+            "be", "been", "was", "were", "have", "has", "had", "we", "our"}
     grams = [f"{left} {right}" for left, right in zip(words, words[1:])
              if left.casefold() not in stop and right.casefold() not in stop]
     choices = grams or [word for word in words if word.casefold() not in stop]

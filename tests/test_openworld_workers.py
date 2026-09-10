@@ -28,6 +28,7 @@ class ReplayClient:
                           mode="replay")
 
 
+SEARCH_TOPIC = {"topic": "skewed table query caching", "subject": "table queries"}
 THEORY = {
     "assumption": "uniform sampling",
     "claim": "Removing uniform sampling reduces query cost for skewed table records",
@@ -127,8 +128,16 @@ class WorkerTests(unittest.TestCase):
                 return [paper]
             def verify_fetcher(self, url):
                 return b'<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Caching skewed table queries</title></entry></feed>'
-        result = self.worker(feed=Feed()).executors()["SURVEY"](action("SURVEY"), self.state.view())
+        # A survey now names its own search subject before it queries an index,
+        # because handing the question over verbatim searched for `all:"does
+        # petal"` and returned conic programming.
+        worker = self.worker([SEARCH_TOPIC], feed=Feed())
+        result = worker.executors()["SURVEY"](action("SURVEY"), self.state.view())
         self.assertEqual(result.status, "surveyed")
+        self.assertEqual([purpose for purpose, _ in worker.client.prompts],
+                         ["retrieval_search_topic"])
+        self.assertEqual(result.events[0].payload["search_topic"]["topic"],
+                         SEARCH_TOPIC["topic"])
         row = result.events[0].payload
         self.assertEqual(row["kind"], "literature_survey")
         self.assertEqual(row["read_first"], ["2601.12345"])
@@ -140,7 +149,8 @@ class WorkerTests(unittest.TestCase):
             verify_literature = False
             def survey_around(self, *args, **kwargs):
                 return []
-        result = self.worker(feed=Feed()).executors()["SURVEY"](action("SURVEY"), self.state.view())
+        result = self.worker([SEARCH_TOPIC], feed=Feed()).executors()["SURVEY"](
+            action("SURVEY"), self.state.view())
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.extras["citations"], [])
 

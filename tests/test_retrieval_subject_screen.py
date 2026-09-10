@@ -110,5 +110,73 @@ class SubjectScreenTest(unittest.TestCase):
         self.assertEqual(sorted(sent["papers"][0]), ["abstract", "cite_id", "title"])
 
 
+class SearchTopicTest(unittest.TestCase):
+    """CASE 10: ask an index for the subject, not for the question's wording.
+
+    The phrase builder takes adjacent word pairs in sentence order, so "does
+    petal geometry separate iris species better than sepal geometry?" became
+    the query `all:"does petal"` — and a live survey returned conic
+    programming, nanophotonics and cut-flower senescence. "iris species", the
+    one phrase naming the subject, was never queried at all.
+    """
+
+    def test_a_question_is_turned_into_a_search_phrase(self):
+        from farfield.extras.openworld.exploration import search_topic
+
+        client = Stub(json.dumps({"topic": "iris species petal sepal morphometrics",
+                                  "subject": "iris flowers"}))
+        result = search_topic(ROOT, "", client=client)
+        self.assertEqual(result["topic"], "iris species petal sepal morphometrics")
+        self.assertEqual(result["basis"], "model_named_subject_and_phenomenon")
+
+    def test_the_phrase_actually_changes_the_query(self):
+        from farfield.extras.livefeed import survey_queries
+
+        before = survey_queries(ROOT, ROOT, topic=ROOT)
+        after = survey_queries("iris species petal sepal morphometrics",
+                               "iris species petal sepal morphometrics",
+                               topic="iris species petal sepal morphometrics")
+        self.assertNotIn("iris species", " ".join(before))
+        self.assertIn("iris species", " ".join(after))
+
+    def test_a_question_word_never_starts_a_search_phrase(self):
+        from farfield.extras.livefeed import object_survey_phrases
+
+        for question in (ROOT,
+                         "how does retrieval augmentation change factual accuracy?",
+                         "can sparse attention preserve accuracy at long lengths?",
+                         "is a deeper model better than a wider one for tabular data?"):
+            with self.subTest(question=question):
+                first = object_survey_phrases(question)[0].split()[0].casefold()
+                self.assertNotIn(first, {"does", "how", "can", "is", "what", "why",
+                                         "whether", "better", "than"})
+
+    def test_no_client_leaves_the_question_as_it_was(self):
+        from farfield.extras.openworld.exploration import search_topic
+
+        result = search_topic(ROOT, "", client=None)
+        self.assertEqual(result["topic"], ROOT)
+        self.assertEqual(result["basis"], "root_question_verbatim")
+
+    def test_an_unusable_answer_falls_back_rather_than_searching_for_nothing(self):
+        from farfield.extras.openworld.exploration import search_topic
+
+        for payload, basis in ((json.dumps({"topic": "iris"}), "unusable_length"),
+                               (json.dumps({"topic": " ".join(["w"] * 20)}),
+                                "unusable_length"),
+                               ("not json", "malformed")):
+            with self.subTest(basis=basis):
+                result = search_topic(ROOT, "", client=Stub(payload))
+                self.assertEqual(result["topic"], ROOT)
+                self.assertEqual(result["basis"], basis)
+
+    def test_one_call_names_the_subject(self):
+        from farfield.extras.openworld.exploration import search_topic
+
+        client = Stub(json.dumps({"topic": "iris species petal sepal morphometrics"}))
+        search_topic(ROOT, "which geometry separates the species?", client=client)
+        self.assertEqual(client.calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

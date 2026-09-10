@@ -248,6 +248,45 @@ def _inert_action_refused() -> bool:
     return "already_established" in information_precondition(state, action)
 
 
+def _trajectory_lane_end_to_end() -> bool:
+    """A citation across namespaces becomes a transition that survives storage.
+
+    Every link in the chain that six live segments reported as present and
+    never used: a reference in one namespace resolving to a work keyed in
+    another, a grounded conceptual delta, serialization into a survey
+    artifact, re-verification on the way back out, and retrieval against a
+    current state.
+    """
+    from ..citations import (CitationEdge, DIRECT_CITATION, EvolutionGraph,
+                             ExtractionBudget, transitions_from_graph)
+    from ..explore import retrieve_transitions
+
+    def paper(title, wid, year, representation, refs=(), aliases=()):
+        return {"title": title, "work_id": wid, "published": str(year),
+                "source": "openalex", "references": list(refs), "aliases": list(aliases),
+                "abstract": f"We study {title}. The data is represented as {representation}.",
+                "field_spans": {"representation": {"value": representation,
+                                                   "quote": representation,
+                                                   "section": "abstract"}}}
+
+    graph = EvolutionGraph()
+    graph.add_work(paper("roots", "doi:10.1/a", 2015, "a dense token grid",
+                         aliases=["W1"]))
+    graph.add_work(paper("branch", "doi:10.1/b", 2020, "a sparse retrieval index",
+                         refs=["W1"]))
+    graph.add_edge(CitationEdge(source="doi:10.1/a", target="doi:10.1/b",
+                                kind=DIRECT_CITATION, source_year="2015",
+                                target_year="2020"))
+    extracted, _ = transitions_from_graph(graph,
+                                          budget=ExtractionBudget(annotated_edges=0))
+    if len(extracted) != 1:
+        return False
+    stored = [row.to_dict() for row in extracted]
+    selected = retrieve_transitions({"representation": "a dense token grid"}, stored)
+    return (len(selected) == 1 and selected[0].operator == "representation_change"
+            and selected[0].retrieval["applicability"] == "established")
+
+
 def _pivot_preserves_evidence() -> bool:
     """A retired direction keeps its WORLD evidence, its contract and its lessons."""
     from . import OpenWorld
@@ -561,14 +600,17 @@ REGISTER: tuple[Capability, ...] = (
         "trajectory_conditioned_exploration",
         "Historical scientific transitions, grounded in citation lineage, propose "
         "operators for a first-hop hypothesis.",
-        ("explore.py", "openworld/workers.py"),
-        ("tests/test_research_retrieval.py",),
-        status=PARTIAL, live_path=None,
-        limits="The matcher works, but building the library needs one retrieved paper "
-               "to cite another, and keyword retrieval rarely returns such a pair. In "
-               "three live runs the library was empty every time and the lane was "
-               "correctly not offered.",
-        note="Blocked on retrieval that can follow citation edges, not on corpus size.",
+        ("explore.py", "citations.py", "workid.py", "openworld/workers.py"),
+        ("tests/test_research_retrieval.py", "tests/test_research_citation_graph.py"),
+        status=PARTIAL, live_path=_trajectory_lane_end_to_end,
+        limits="The library is now built by bounded citation expansion rather than by "
+               "hoping one of six keyword results cites another: a live survey produced "
+               "twenty-two works, twenty-eight provenance edges and ten grounded "
+               "transitions. What is not yet demonstrated live is a hypothesis carrying "
+               "source_trajectories_used, so the status stays partial until a live "
+               "mission shows the lane consuming what it recovered.",
+        note="Expansion reads titles, abstracts and reported references only; no full "
+             "text is fetched for an expanded node.",
     ),
     Capability(
         "project_pivot",
