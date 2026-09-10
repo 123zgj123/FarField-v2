@@ -319,6 +319,41 @@ def _has_capability(names: Iterable[str], needed: str) -> bool:
     return wanted in have
 
 
+def _contrast_observations(state: Any, question: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Contrasts a live hypothesis named that the bound world can actually split.
+
+    Read from the hypothesis's own `experiment_proposal`: the observable it
+    predicts on, and the contrast lever the compiler bound it to. Both must be
+    registered by the world, so this cannot invent a measurement — it only
+    reaches one the world already offers.
+    """
+    qid = str(question.get("id") or "")
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for theory in getattr(state, "theories", []) or []:
+        if theory.get("role") == "competing_explanation":
+            continue
+        if str(theory.get("question_id") or "") != qid:
+            continue
+        proposal = dict(theory.get("experiment_proposal") or {})
+        if not proposal:
+            proposal = dict((dict(theory.get("card") or {}).get("research_metadata")
+                             or {}).get("experiment_proposal") or {})
+        outcomes = dict(proposal.get("expected_outcomes") or {})
+        observables = [str(dict(row).get("observable") or "")
+                       for row in outcomes.values() if isinstance(row, Mapping)]
+        lever = str(dict(theory.get("card") or {}).get("lever")
+                    or proposal.get("lever") or theory.get("lever") or "")
+        for observable in observables:
+            key = (lever, observable)
+            if not lever or not observable or key in seen:
+                continue
+            seen.add(key)
+            rows.append({"contrast": lever, "observable": observable,
+                         "theory_id": str(theory.get("id") or "")})
+    return rows
+
+
 def _observable_present(state: ScientificState, question: Mapping[str, Any]) -> bool:
     required = str(question.get("required_observable") or "").strip()
     if required:
@@ -456,6 +491,24 @@ def eligible_actions(
                     extra={"question": dict(question)},
                 )
             )
+            # A hypothesis may name an observational contrast the bound world
+            # already registers. Without this the contrast is unreachable: the
+            # generic OBSERVE returns dataset descriptives, and PROBE refuses a
+            # question card because a stratum comparison is not an intervention.
+            # A live run produced two well-formed contrasts and could execute
+            # neither, so the whole observational family of questions — most of
+            # empirical software engineering — dead-ended.
+            for row in _contrast_observations(state, question):
+                found.append(
+                    ActionInstance(
+                        SPECS[OBSERVE],
+                        target=qid,
+                        reason="named_contrast_on_the_bound_world",
+                        lineage_id=lineage,
+                        frontier_target_id=qid,
+                        extra={"question": dict(question), **row},
+                    )
+                )
         else:
             gap = required_cap or str(question.get("required_observable") or "observable")
             found.append(

@@ -197,6 +197,94 @@ def observation_plan_from(action: ActionInstance, state: Mapping[str, Any]) -> O
     )
 
 
+def _named_contrast(env: Any, action: Any, fixture: Any) -> Any:
+    """Split the bound world on a contrast a hypothesis named, or return None.
+
+    This is the observational half of the loop, and it was missing. A live run
+    produced two hypotheses that each named a registered contrast and a
+    registered observable on the bound world, and neither could be executed:
+    the generic OBSERVE returns dataset descriptives, and PROBE refuses a
+    question card because a stratum comparison is not an intervention. It is
+    not an intervention — and it is still evidence, which is why the kernel has
+    a `QuestionEvidence` role at all.
+
+    What it produces stays observational. `causal_scope` is none, the strata
+    the world names as needing matching are reported as **unmatched**, and the
+    result cannot corroborate a mechanism. A stratum comparison that quietly
+    read as a controlled experiment would be the most expensive kind of
+    overclaim available here.
+    """
+    from ..dynworld import (CONTRAST_MATCHING, contrast_meaning, forward_simulate,
+                            is_contrast, levers_of, observables_of)
+
+    lever = str(action.extra.get("contrast") or "")
+    observable = str(action.extra.get("observable") or "")
+    if not lever or not is_contrast(lever) or fixture is None:
+        return None
+    qid = str(action.frontier_target_id or action.target or "")
+    if lever not in levers_of(fixture) or observable not in observables_of(fixture):
+        return CandidateResult(
+            status="blocked",
+            events=[make_event("ActionBlocked", {
+                "reason": "contrast_or_observable_is_not_registered_by_this_world",
+                "question_id": qid, "contrast": lever, "observable": observable,
+                "world_registers": list(levers_of(fixture)),
+            }, action_type=OBSERVE, frontier_target_id=qid)],
+            extras={"outcome": WORLD_INCOMPATIBLE},
+        )
+    try:
+        run = forward_simulate(fixture, lever, intensity=1.0, horizon=2)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        return CandidateResult(status="observe_failed",
+                               extras={"outcome": NO_DATA, "reason": repr(exc)})
+    steps = list(run.get("steps") or [])
+    if len(steps) < 2:
+        return CandidateResult(status="observe_failed", extras={"outcome": NO_DATA})
+    whole = dict(dict(steps[0]).get("observables") or {})
+    stratum = dict(dict(steps[-1]).get("observables") or {})
+    if observable not in whole or observable not in stratum:
+        return CandidateResult(status="observe_failed", extras={"outcome": NO_DATA})
+    treatment, control = float(stratum[observable]), float(whole[observable])
+    attested = is_attested(fixture)
+    evidence_id = "obs-" + hashlib.sha256(json.dumps(
+        [world_id_of(fixture), fixture.digest, qid, lever, observable,
+         "contrast-v1"], sort_keys=True).encode()).hexdigest()
+    return CandidateResult(
+        status="observed",
+        evidence={
+            "role": "QuestionEvidence", "question_id": qid,
+            "question": str(action.extra.get("question", {}).get("text") or action.target),
+            "theory_id": str(action.extra.get("theory_id") or ""),
+            "world_id": world_id_of(fixture), "world_digest": fixture.digest,
+            "evidence_id": evidence_id,
+            "contrast": lever, "observable": observable,
+            "treatment": treatment, "control": control,
+            "n_stratum": float(stratum.get("n_updates") or 0),
+            "n_whole": float(whole.get("n_updates") or 0),
+            "result": {"contrast": lever, "meaning": contrast_meaning(lever),
+                       "observable": observable, "stratum": stratum, "whole": whole,
+                       "report_digest": run.get("report_digest")},
+            "epistemic": "WORLD" if attested else "GENERATED",
+            "attested": attested, "outcome": PARTIALLY_RESOLVED,
+            "exploratory": True, "cannot_corroborate": True,
+            "causal_scope": "none",
+            "interpretation": "observational contrast; not a causal claim",
+            "matching": f"NOT matched on {CONTRAST_MATCHING}; the stratum may differ "
+                        "from the rest of the history in ways this comparison does "
+                        "not control",
+            "measurement": "contrast-v1", "read_from_world": True,
+            "harness_version": env.harness.version_id,
+        },
+        world_id=world_id_of(fixture), evidence_id=evidence_id,
+        extras={"outcome": PARTIALLY_RESOLVED, "contrast": lever,
+                "observable": observable, "treatment": treatment, "control": control},
+    )
+
+
+def world_id_of(fixture: Any) -> str:
+    return str(getattr(fixture, "id", "") or "")
+
+
 def execute_observe(env: Any, action: ActionInstance) -> CandidateResult:
     view = env.state.view()
     question = dict(action.extra.get("question") or {})
@@ -235,6 +323,9 @@ def execute_observe(env: Any, action: ActionInstance) -> CandidateResult:
     world_id = str(view.get("world_id") or "")
     world_root = resolve_world_root(env.workspace, world_id)
     fixture = fixture_from_root(world_root, world_id) if world_root else None
+    contrast = _named_contrast(env, action, fixture)
+    if contrast is not None:
+        return contrast
     if fixture is not None and plan.observable != "validator_snapshots" and not needed:
         result = summarize(fixture)
         evidence_id = "obs-" + hashlib.sha256(
