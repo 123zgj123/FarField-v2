@@ -362,3 +362,70 @@ class ExtractionCostTest(unittest.TestCase):
         self.assertEqual(extraction["model_calls_total"], 0)
         self.assertLessEqual(extraction["model_calls_total"],
                              extraction["budget"]["max_model_calls"])
+
+
+class ForwardExpansionTest(unittest.TestCase):
+    """CASE 6: "nobody cites this" and "I asked with the wrong key" differ.
+
+    The forward index takes OpenAlex W-ids and nothing else, while nearly
+    every work here is canonically keyed by DOI. Requiring a W-id made the
+    forward request return an empty list for almost every node, which reads
+    exactly like a paper nobody has cited — and no forward edge ever appeared
+    in a graph.
+    """
+
+    @staticmethod
+    def openalex_row(wid, title, year, refs=()):
+        return {"id": f"https://openalex.org/{wid}", "display_name": title,
+                "publication_year": year, "doi": f"https://doi.org/10.1/{wid.lower()}",
+                "referenced_works": [f"https://openalex.org/{r}" for r in refs],
+                "ids": {"openalex": f"https://openalex.org/{wid}"}}
+
+    def test_a_doi_key_is_resolved_before_the_forward_request(self):
+        import json as _json
+
+        from farfield.extras.sources import fetch_openalex_citing
+
+        asked: list[str] = []
+
+        def fetcher(url, **kwargs):
+            asked.append(url)
+            if "cites%3A" in url or "cites:" in url:
+                return _json.dumps({"results": [
+                    self.openalex_row("W9", "later work", 2023)]}).encode()
+            return _json.dumps({"results": [
+                self.openalex_row("W1", "the cited work", 2015)]}).encode()
+
+        works = fetch_openalex_citing(["doi:10.1/w1"], fetcher=fetcher)
+        self.assertEqual(len(asked), 2, "a DOI key needs one resolve then one query")
+        self.assertEqual([w.title for w in works], ["later work"])
+
+    def test_a_known_openalex_alias_skips_the_resolve_request(self):
+        graph = EvolutionGraph()
+        seed = work("seed", "doi:10.1/seed", 2015, aliases=["W1"])
+        graph.add_work(seed)
+        asked: list[str] = []
+
+        def fetch_citing(keys):
+            asked.extend(keys)
+            return [FreshWork.from_dict(work("citer", "doi:10.1/citer", 2022,
+                                             refs=["W1"]))]
+
+        graph = expand_citations([seed], fetch_citing=fetch_citing,
+                                 budget=ExpansionBudget(depth=1))
+        self.assertEqual(asked, ["openalex:W1"],
+                         "the W-id arrived with the record; asking by DOI would "
+                         "have paid for a resolve")
+        forward = [e for e in graph.edges if e.kind == FORWARD_CITATION]
+        self.assertEqual(len(forward), 1)
+        self.assertEqual(forward[0].source, "doi:10.1/seed")
+
+    def test_an_arxiv_only_reference_is_counted_not_silently_dropped(self):
+        """A key this index cannot resolve shows up as a requested-minus-fetched gap."""
+        graph = EvolutionGraph()
+        seed = work("seed", "doi:10.1/seed", 2015, refs=["arXiv:2401.00001"])
+        graph = expand_citations([seed], fetch_by_id=lambda keys: [],
+                                 budget=ExpansionBudget(depth=1))
+        telemetry = graph.telemetry
+        self.assertEqual(telemetry["citation_nodes_requested"], 1)
+        self.assertEqual(telemetry["citation_nodes_fetched"], 0)

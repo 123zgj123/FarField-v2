@@ -407,8 +407,9 @@ def fetch_openalex_by_id(
         clause.append("openalex:" + "|".join(buckets[OPENALEX][:50]))
     if buckets.get(DOI):
         clause.append("doi:" + "|".join(buckets[DOI][:50]))
-    if buckets.get(ARXIV):
-        clause.append("ids.openalex:" + "|".join(buckets[ARXIV][:50])) if False else None
+    # An arXiv id has no OpenAlex filter that resolves it directly. Rather than
+    # a disabled clause that silently drops those keys, they stay unrequested
+    # and show up as the gap between requested and fetched nodes.
     if not clause:
         return []
     works: list[FreshWork] = []
@@ -436,14 +437,35 @@ def fetch_openalex_citing(
     fetcher: Fetcher | None = None,
     max_results: int = 8,
 ) -> list[FreshWork] | FeedBlocked:
-    """Later works that cite this one. Forward provenance, bounded per call."""
+    """Later works that cite this one. Forward provenance, bounded per call.
+
+    OpenAlex's ``cites:`` filter takes W-ids and nothing else. Most works here
+    are canonically keyed by DOI, so requiring a W-id made this return an empty
+    list for almost every node — indistinguishable from "nobody cites it", and
+    the reason no forward edge ever appeared in a graph. Keys in another
+    namespace are resolved to W-ids first, in one batched request.
+    """
     from .workid import OPENALEX, parse_identifier
 
-    targets = []
+    targets: list[str] = []
+    unresolved: list[str] = []
     for key in keys or ():
         parsed = parse_identifier(key)
-        if parsed and parsed[0] == OPENALEX:
-            targets.append(parsed[1])
+        if parsed is None:
+            continue
+        (targets if parsed[0] == OPENALEX else unresolved).append(
+            parsed[1] if parsed[0] == OPENALEX else key)
+    if unresolved:
+        resolved = fetch_openalex_by_id(unresolved, fetcher=fetcher,
+                                        max_results=max(len(unresolved), 10))
+        if isinstance(resolved, FeedBlocked):
+            return resolved
+        for work in resolved:
+            for alias in work.aliases:
+                parsed = parse_identifier(str(alias))
+                if parsed and parsed[0] == OPENALEX:
+                    targets.append(parsed[1])
+                    break
     if not targets:
         return []
     url = OPENALEX_API + "?" + urllib.parse.urlencode({

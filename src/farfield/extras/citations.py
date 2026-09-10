@@ -27,6 +27,8 @@ from typing import Any, Callable, Iterable, Mapping
 
 from .workid import CanonicalWork, WorkRegistry, parse_identifier
 
+OPENALEX_NS = "openalex"
+
 
 # Edge kinds. Only the first two carry publication provenance.
 DIRECT_CITATION = "DIRECT_CITATION"        # source is cited by target
@@ -177,6 +179,20 @@ class EvolutionGraph:
 Fetch = Callable[[list[str]], Any]
 
 
+def _forward_key(row: Mapping[str, Any], canonical: str) -> str:
+    """Ask for citers by an OpenAlex id when the source already gave one.
+
+    The forward index takes W-ids. A node keyed by DOI can still be asked
+    about, but that costs a resolve request first — which is wasted when the
+    W-id arrived with the record.
+    """
+    for alias in row.get("aliases") or ():
+        parsed = parse_identifier(str(alias))
+        if parsed and parsed[0] == OPENALEX_NS:
+            return f"{OPENALEX_NS}:{parsed[1]}"
+    return canonical
+
+
 def _blocked_record(result: Any) -> dict[str, Any] | None:
     if isinstance(result, Mapping) and result.get("blocked"):
         return dict(result)
@@ -257,7 +273,7 @@ def expand_citations(
             # --- forward: works that cite this one ---------------------------
             if fetch_citing is not None and graph.degree(canonical) < budget.max_degree:
                 requested += 1
-                result = fetch_citing([canonical])
+                result = fetch_citing([_forward_key(row, canonical)])
                 blocked = _blocked_record(result)
                 if blocked:
                     graph.blocked.append({"stage": "forward", "node": canonical, **blocked})
