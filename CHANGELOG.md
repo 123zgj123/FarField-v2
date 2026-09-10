@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-09-10 — The far-field lane, from zero edges to a graph it can read
+
+Six live segments reported the trajectory lane as present and used it zero
+times. It was not broken downstream; it had nothing to read. Six defects
+compounded, each sufficient on its own to produce nothing, and each only
+visible once the one above it was fixed.
+
+- **Transitions were sought inside one keyword search's six results**, pairwise,
+  and only when one happened to cite another. The references those results
+  carried were kept as strings and never dereferenced. `citations.py` now
+  expands a bounded neighbourhood — backward by dereferencing reported
+  references, forward by asking which later works cite a seed — and keeps
+  provenance kinds apart from retrieval kinds, because a direct citation with
+  publication order is evidence that one paper came after another and
+  bibliographic coupling is not.
+- **The same paper was named differently by two indexes**, so a genuine citation
+  could never match: an OpenAlex work keyed by DOI against its own
+  `referenced_works` keyed by W-id. `workid.py` gives a work one identity across
+  arXiv, DOI, OpenAlex and S2. Resolving aliases cannot invent an edge; it only
+  lets an edge a source already reported find the work it points at.
+- **The forward request took W-ids and nothing else**, while nearly every node is
+  keyed by DOI, so it returned an empty list for almost every node —
+  indistinguishable from "nobody cites it". Thirty-one backward edges and zero
+  forward edges, with nothing in the output saying why. Keys are now resolved
+  first, and expansion prefers an OpenAlex id the record already carried.
+- **Extraction cost was quadratic in edges.** Both endpoints of every edge were
+  re-extracted, so a paper on five edges was read five times and a 24-edge graph
+  could cost forty-eight model calls inside a run allowed twenty-four. Each work
+  is now extracted once, highest-degree first, and only the largest grounded
+  deltas are sent back for annotation. Expanded nodes are read from title,
+  abstract, year and references — no full text is fetched for them. Independent
+  extractions also run together: ten papers in sequence spent a quarter of an
+  hour on work with no ordering.
+- **Verification used a different rule at each end.** Extraction resolved the
+  citation through a canonical registry; reading the transition back from the
+  artifact compared raw strings, so the namespace mismatch reappeared at read
+  time and ten grounded transitions restored as ten blocked ones. The
+  identifiers the resolution was made of travel with the transition, and the
+  restore redoes the resolution from them rather than trusting a stored verdict.
+- **Retrieval counted "unrelated" as "disagrees",** and one disagreement excluded
+  a transition. A survey anchor holds a known value for every structural field,
+  so a condition from someone else's paper always disagreed with something — a
+  gate satisfiable by a fixture and by almost nothing else. An unrelated
+  condition now abstains and is named as unmatched; a condition the state
+  actually denies still excludes.
+
+Then the lane found something and could not act on it: the research layer named
+fifteen operators and the card generator's table had four, so a lineage that
+recovered `scaling` or `verifier_shift` was blocked at the moment it tried to
+use what it had found. The missing twelve have instructions and a contract test
+pins the two vocabularies together.
+
+### Retrieval was searching for the wrong thing
+
+A live survey for *does petal geometry separate iris species better than sepal
+geometry?* returned conic programming, nanophotonics, bee electric fields and
+cut-flower senescence — and the lexical relevance guard called the conic
+programming paper **on topic**, because its abstract contained "petal" and
+"geometry". Two causes, both now fixed:
+
+- The phrase builder took adjacent word pairs in sentence order, so the query
+  was `all:"does petal"`. "iris species" ranked fifth and was never asked for.
+  The stop list now covers the function words a research question opens and
+  compares with, and a survey names its own search subject in one call before
+  querying an index.
+- The lexical guard says in its own output that it cannot tell a subject from a
+  shared word. One batched call over titles and abstracts now screens what each
+  paper is about. The verdict may only **demote**: a paper the lexical guard has
+  already rejected cannot be argued back in, so the screen can withhold
+  relevance and never invent it.
+
+The resource view also billed a whole SURVEY as one `api_call` while the ledger
+that enforces the envelope counted every model call — two meters of the same
+name, an order of magnitude apart. Attempts now carry the ledger's real count.
+
 ## 2026-09-10 — Bounded live runs and the defects they exposed
 
 Three bounded segments against `gpt-5.6-sol` on the attested `fisher-iris`
