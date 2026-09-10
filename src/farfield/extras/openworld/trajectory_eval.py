@@ -107,6 +107,7 @@ class ScriptedWorld:
             "research_lane": lane,
             "operator_reused": selection["operator"],
             "operator_selection": selection,
+            "revision_id": str(action.extra.get("revision_id") or ""),
             "hop": int(action.extra.get("hop") or 1),
             "parent_theory_id": str(action.extra.get("parent_theory_id") or ""),
             # The executable handle a PROBE needs. In a live run this is a

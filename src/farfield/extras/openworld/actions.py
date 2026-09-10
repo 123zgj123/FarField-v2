@@ -1047,13 +1047,12 @@ def repair_actions(state: ScientificState) -> list[ActionInstance]:
         # aimed at a hypothesis id the state does not hold is refused downstream
         # as a lineage mismatch, which is how four live revisions produced no
         # experiment even after they reached the menu.
+        # The parent the revision recorded, and only that. A fallback that
+        # re-derived it from the newest hypothesis made this action's identity
+        # change every tick, so the retry guard could never recognise it.
         named = str(revision.get("parent_design") or "")
         parent = next((row for row in state.theories
                        if named and str(row.get("id") or "") == named), {})
-        if not parent:
-            parent = next((row for row in reversed(state.theories)
-                           if row.get("role") != "competing_explanation"
-                           and row.get("status") != "retired"), {})
         parent_id = str(parent.get("id") or "")
         qid = str(parent.get("question_id") or "")
         if not qid:

@@ -371,6 +371,8 @@ def _research_score(action: ActionInstance, state: ScientificState) -> dict[str,
         central = 0.9 if kind in {PROBE, VERIFY, REDESIGN} else 0.5
     elif alignment == "instrumental":
         central = 0.4 if kind in {PROBE, VERIFY, REDESIGN} else 0.2
+    if kind == THEORIZE and action.extra.get("revision_id"):
+        central = max(central, 0.85)
     if kind in {REVIEW, PROJECT_PIVOT}:
         # These act on the project as a whole, so they inherit the project's
         # own alignment rather than a node's.
@@ -389,12 +391,23 @@ def _research_score(action: ActionInstance, state: ScientificState) -> dict[str,
     dimension = str(demand.get("dimension") or "")
     same_dimension = [row for row in unresolved_revisions
                       if str(row.get("dimension") or "") == dimension] if dimension else []
+    # A revision nothing has carried out is a plan, not a repair. Four of them
+    # accumulated in a live segment while the action that would execute one sat
+    # on the menu every tick and was never chosen: the scheduler preferred
+    # writing another plan to carrying out the ones it had.
+    uncarried = [row for row in unresolved_revisions if not row.get("carried_out_by")]
     exhaustion = 0.0
     repair = 0.0
     if kind == REDESIGN:
         severity = str(demand.get("severity") or "major")
         repair = {"fatal": 1.4, "major": 0.9, "minor": 0.3}.get(severity, 0.6)
         exhaustion = float(len(same_dimension) or max(0, len(unresolved_revisions) - 1))
+        # Each unexecuted plan makes another plan worth less, not more.
+        exhaustion += float(len(uncarried))
+    elif kind == THEORIZE and action.extra.get("revision_id"):
+        # Carrying out a recorded revision *is* the repair, and it is the only
+        # action that can turn one into evidence.
+        repair = 1.5
     elif kind == PROJECT_PIVOT:
         repair = 1.2 if fatal_open else 0.7
         # Every redesign this direction already spent without moving is a

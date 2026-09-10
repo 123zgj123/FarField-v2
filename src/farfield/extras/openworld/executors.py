@@ -1271,8 +1271,15 @@ def execute_redesign(env: Any, action: ActionInstance) -> CandidateResult:
         # The design being revised, or empty when the demand came from a quality
         # gap with no hypothesis attached. The dimension is recorded separately;
         # putting it here made the parent a hypothesis id that does not exist.
+        # Resolved once, here. Re-deriving it per tick let the parent drift to
+        # whichever hypothesis was newest, which changed the repair action's
+        # identity every tick so the retry guard never recognised it and the
+        # repair ran twenty-five times.
         "parent_design": theory_id if any(
-            str(row.get("id") or "") == theory_id for row in env.state.theories) else "",
+            str(row.get("id") or "") == theory_id for row in env.state.theories)
+        else next((str(row.get("id") or "") for row in reversed(env.state.theories)
+                   if row.get("role") != "competing_explanation"
+                   and row.get("status") != "retired"), ""),
         "failure_root_cause": root_cause,
         "invalidated_assumption": (
             (parent.get("assumptions") or [""])[0] if parent.get("assumptions")

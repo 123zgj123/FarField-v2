@@ -196,3 +196,79 @@ class RepairTargetsAHypothesisThatExistsTest(unittest.TestCase):
                 self.assertIsNotNone(parent)
                 self.assertEqual(repair.extra["hop"], int(parent.get("hop") or 1) + 1)
                 self.assertEqual(parent.get("question_id"), repair.target)
+
+
+class CarryingOutBeatsPlanningAgainTest(unittest.TestCase):
+    """A live segment opened four revisions and executed none of them.
+
+    From the eighth tick onward the action that would carry out a revision was
+    on the menu every single tick and was never chosen; the scheduler picked
+    REDESIGN four more times instead. Writing another plan is not repair, and an
+    unexecuted plan makes the next plan worth less, not more.
+    """
+
+    def _env(self):
+        env = make_env(Path(tempfile.mkdtemp()) / "p", contract={
+            "root_question": ROOT, "resource_limits": {"api_calls": 100}})
+        seed_question(env, "Q1", ROOT)
+        seed_survey(env, "Q1")
+        seed_theory(env, "T1", "Q1")
+        seed_survey(env, "Q1", theory_id="T1")
+        seed_probe_evidence(env, "E1", "T1", "Q1", sample_size=30,
+                            ablation_required=True, cannot_corroborate=True)
+        seed_review(env, review_id="R1", severity="major", dimension="baseline_strength",
+                    objection="a competing mechanism is not ablated",
+                    repair_type="stronger_baseline", requires_new_evidence=True,
+                    theory_id="T1", question_id="Q1")
+        return env
+
+    def _ranked(self, env):
+        from farfield.extras.openworld.scheduler import schedule_all
+
+        class Stub:
+            client = None
+
+            def executors(self):
+                return {}
+
+        if not env.workers_connected:
+            env.connect_workers(Stub())
+        return schedule_all(env.state, env.eligible())
+
+    def test_an_open_revision_is_carried_out_before_another_is_opened(self):
+        env = self._env()
+        env.execute(next(a for a in env.eligible() if a.action_type == "REDESIGN"))
+        ranked = self._ranked(env)
+        self.assertTrue(ranked, "nothing was schedulable")
+        top = ranked[0].action
+        self.assertEqual(top.action_type, "THEORIZE")
+        self.assertTrue(top.extra.get("revision_id"),
+                        f"chose {top.action_type} instead of carrying out the revision")
+
+    def test_each_unexecuted_plan_makes_the_next_plan_worth_less(self):
+        env = self._env()
+        first = None
+        for _ in range(3):
+            redesign = next((row for row in self._ranked(env)
+                             if row.action.action_type == "REDESIGN"), None)
+            if redesign is None:
+                break
+            if first is None:
+                first = redesign.total
+            env.execute(redesign.action)
+        later = next((row for row in self._ranked(env)
+                      if row.action.action_type == "REDESIGN"), None)
+        if later is not None and first is not None:
+            self.assertLess(later.total, first)
+
+    def test_a_revision_someone_carried_out_stops_penalising_new_ones(self):
+        env = self._env()
+        env.execute(next(a for a in env.eligible() if a.action_type == "REDESIGN"))
+        penalised = next(row for row in self._ranked(env)
+                         if row.action.action_type == "REDESIGN")
+        env.state = apply_events(env.state, [make_event("TheoryCreated", {
+            "id": "T2", "question_id": "Q1", "text": "repaired",
+            "revision_id": env.state.design_revisions[0]["revision_id"]})], log=env.log)
+        relieved = next(row for row in self._ranked(env)
+                        if row.action.action_type == "REDESIGN")
+        self.assertGreater(relieved.total, penalised.total)
