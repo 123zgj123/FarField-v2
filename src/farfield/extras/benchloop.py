@@ -1,5 +1,10 @@
 """A research-intern loop whose verdict is never a toy probe.
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. Only its own tests import it; see
+openworld/reachability.py. It is the harness for the drift-vs-v2 campaign,
+which nothing currently runs.
+
+
 MLE-Bench Lite and AARRI-Bench both give the agent an instruction and a
 workspace, then score the deliverable with an *external* grader. This
 module is the shared intern: look around, pre-register what would count

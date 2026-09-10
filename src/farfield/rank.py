@@ -1,5 +1,10 @@
 """Two-term scoring of candidate directions: plausibility and alienness.
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this
+module; see openworld/reachability.py. It proposes a fix for an arm nothing
+runs, so the fix has never been applied to anything.
+
+
 Farfield's drift arm has only ever had the second term. `_distant_paths` hard
 filters to paths longer than the k-hop, `anti_neighborhood` removes what is left
 inside it, and `proximity_invert` prefers the least neighbourly survivor. Nothing

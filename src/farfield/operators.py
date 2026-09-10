@@ -1,4 +1,9 @@
-"""Registered drift/judge operators. A skill is a digest → callable, not a prompt."""
+"""Registered drift/judge operators. A skill is a digest → callable, not a prompt.
+
+NOT ON ANY PATH THE RUNTIME EXECUTES. Nothing registers or calls these; see
+openworld/reachability.py. They belong to the pre-openworld drift arm.
+"""
+
 
 from __future__ import annotations
 

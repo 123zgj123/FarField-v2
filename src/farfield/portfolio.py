@@ -1,4 +1,10 @@
-"""Diversity-preserving scheduler for speculative research candidates."""
+"""Diversity-preserving scheduler for speculative research candidates.
+
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this module; see
+openworld/reachability.py. Scheduling on the research path is
+openworld/scheduler.py.
+"""
+
 
 from __future__ import annotations
 

@@ -1,5 +1,11 @@
 """Deterministic graph-walk card generator — the v2 control arm.
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this
+module; see openworld/reachability.py. It is retained as a measured control
+arm for a comparison nothing currently runs, and the numbers below are the
+ones it was frozen at, not results anything produces today.
+
+
 Under DESIGN_V2_ZH.md this module is no longer the system's idea generator;
 it is the baseline the v2 generator (LLM far-field jumps over the embedding
 space) must beat under the same anchor and budget. It stays exactly as

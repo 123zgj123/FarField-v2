@@ -1,5 +1,10 @@
 """Falsifiable probing of far-field conjecture cards (INV-2, INV-11).
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this
+module; see openworld/reachability.py. Probe falsifiability on the research
+path is extras/probeexp.py.
+
+
 A probe whose predicate is the generator's own filter cannot fail, and a card
 that cannot fail did not survive anything. Membership in the seed k-hop is such
 a predicate: `_drift_cards` already discards every path inside the k-hop, so

@@ -1,5 +1,10 @@
 """Evaluator-side novelty scoring: did an arm propose combinations nobody had made?
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this
+module; see openworld/reachability.py. It scores the control comparison
+described in drift.py, which nothing currently runs.
+
+
 The timeslice value anchor asks whether a card's endpoint grew a highly cited
 post-T successor. That is a popularity question, and a bibliography dump of a
 famous seed wins it by construction while far-field drift, which is supposed to

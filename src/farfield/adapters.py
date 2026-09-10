@@ -1,5 +1,9 @@
 """Provider-neutral rendering helpers.
 
+NOT ON ANY PATH THE RUNTIME EXECUTES. No entry point reaches this
+module; see openworld/reachability.py. The handoff it renders is not performed.
+
+
 These helpers receive a contract already verified by ``FarfieldRuntime``. They do
 not read mutable paths or call any external agent framework.
 """
