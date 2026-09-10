@@ -224,7 +224,7 @@ def expand_citations(
     """
     budget = budget or ExpansionBudget()
     graph = EvolutionGraph()
-    requested = fetched = verified = 0
+    requests = requested = fetched = verified = 0
     rejected: list[dict[str, Any]] = []
 
     frontier: list[str] = []
@@ -245,6 +245,7 @@ def expand_citations(
             wanted = graph.registry.unresolved(row.get("references") or ())
             wanted = wanted[: budget.backward_per_node]
             if wanted and fetch_by_id is not None:
+                requests += 1
                 requested += len(wanted)
                 result = fetch_by_id(list(wanted))
                 blocked = _blocked_record(result)
@@ -274,6 +275,7 @@ def expand_citations(
                             next_frontier.append(cited_id)
             # --- forward: works that cite this one ---------------------------
             if fetch_citing is not None and graph.degree(canonical) < budget.max_degree:
+                requests += 1
                 requested += 1
                 result = fetch_citing([_forward_key(row, canonical)])
                 blocked = _blocked_record(result)
@@ -323,8 +325,12 @@ def expand_citations(
         "budget": budget.to_dict(),
         "bibliographic_coupling_edges": coupled,
         "co_citation_edges": cocited,
-        "citation_nodes_requested": requested,
-        "citation_nodes_fetched": fetched,
+        # Three different things, so three names that say which. A live run
+        # reported 53 requested and 80 fetched, which reads like a bug and is
+        # not one: one forward request returns many rows.
+        "expansion_requests": requests,
+        "reference_keys_requested": requested,
+        "rows_returned_by_sources": fetched,
         "citation_nodes_verified": verified,
         "rejected_nodes": len(rejected),
         "rejected_examples": rejected[:5],
@@ -534,7 +540,7 @@ class PaperStateCache:
             list(pool.map(lambda job: self._extract(*job), plan))
 
     def spend(self) -> dict[str, Any]:
-        return {"paper_extraction_calls": self.calls,
+        return {"paper_extractions_with_a_client": self.calls,
                 "papers_cached": len(self.states),
                 "extractions_reused": self.hits,
                 "paper_budget_exhausted": self.exhausted,
@@ -633,6 +639,10 @@ def transitions_from_graph(
         out.append(transition)
 
     graph.telemetry["extraction"] = {
+        # Extractions performed with a client, which is not the same as calls
+        # on the wire: a warm replay cache serves some of them for nothing. The
+        # ledger is the authority on what was spent, and the resource view
+        # reads it.
         "rule": "one-extraction-per-canonical-work-v1",
         "budget": budget.to_dict(),
         "provenance_edges_considered": len(edges),
@@ -650,7 +660,7 @@ def transitions_from_graph(
         "transitions_with_named_operator": sum(
             1 for row in out if getattr(row, "operator", "unknown") != "unknown"),
         "annotation_calls": annotated,
-        "model_calls_total": cache.calls + annotated,
+        "extractions_and_annotations": cache.calls + annotated,
         "full_text_fetched_for_expanded_nodes": False,
         **cache.spend(),
     }

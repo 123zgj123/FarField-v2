@@ -632,24 +632,28 @@ def trajectory_metrics(state: Any) -> dict[str, Any]:
         "relevant_seed_count": sum(
             len((row.get("retrieval_relevance") or {}).get("usable") or [])
             for row in surveys),
-        "citation_nodes_requested": sum(int(g.get("citation_nodes_requested") or 0)
+        "expansion_requests": sum(int(g.get("expansion_requests") or 0)
+                                  for g in graphs),
+        "reference_keys_requested": sum(int(g.get("reference_keys_requested") or 0)
                                         for g in graphs),
-        "citation_nodes_fetched": sum(int(g.get("citation_nodes_fetched") or 0)
-                                      for g in graphs),
+        "rows_returned_by_sources": sum(int(g.get("rows_returned_by_sources") or 0)
+                                        for g in graphs),
         "citation_nodes_verified": sum(int(g.get("citation_nodes_verified") or 0)
                                        for g in graphs),
         "citation_graph_nodes": sum(int(g.get("nodes") or 0) for g in graphs),
         "citation_edges_found": sum(int(g.get("edges") or 0) for g in graphs),
         "provenance_edges": sum(int(g.get("provenance_edges") or 0) for g in graphs),
         "blocked_sources": sum(int(g.get("blocked_sources") or 0) for g in graphs),
-        "paper_extraction_calls": sum(
-            int((g.get("extraction") or {}).get("paper_extraction_calls") or 0)
+        "paper_extractions_with_a_client": sum(
+            int((g.get("extraction") or {}).get("paper_extractions_with_a_client") or 0)
             for g in graphs),
         "annotation_calls": sum(
             int((g.get("extraction") or {}).get("annotation_calls") or 0)
             for g in graphs),
-        "survey_model_calls": sum(
-            int((g.get("extraction") or {}).get("model_calls_total") or 0)
+        # Not a spend figure: a warm replay cache serves some of these for
+        # nothing. `resources.spent.api_calls` is the measured spend.
+        "extractions_and_annotations": sum(
+            int((g.get("extraction") or {}).get("extractions_and_annotations") or 0)
             for g in graphs),
         "extractions_avoided": sum(
             int((g.get("extraction") or {}).get("extractions_avoided") or 0)

@@ -156,8 +156,9 @@ class ExpansionTest(unittest.TestCase):
     def test_telemetry_answers_which_stage_was_the_limit(self):
         graph = expand_citations(self.seeds, fetch_by_id=self._by_id,
                                  budget=ExpansionBudget(depth=1))
-        for key in ("citation_nodes_requested", "citation_nodes_fetched",
-                    "citation_nodes_verified", "rejected_nodes", "blocked_sources"):
+        for key in ("expansion_requests", "reference_keys_requested",
+                    "rows_returned_by_sources", "citation_nodes_verified",
+                    "rejected_nodes", "blocked_sources"):
             self.assertIn(key, graph.telemetry)
 
 
@@ -291,6 +292,7 @@ class ExtractionCostTest(unittest.TestCase):
         self.assertEqual(extraction["papers_cached"], 5)
         self.assertEqual(client.calls.count("research_paper_state"), 5,
                          "the hub must not be re-extracted once per edge")
+        self.assertEqual(extraction["paper_extractions_with_a_client"], 5)
         self.assertEqual(extraction["edge_endpoint_lookups"], 8)
         self.assertEqual(extraction["extractions_avoided"], 3,
                          "the old version paid for eight reads of five papers")
@@ -361,8 +363,8 @@ class ExtractionCostTest(unittest.TestCase):
         transitions_from_graph(graph, budget=ExtractionBudget(annotated_edges=0))
         extraction = graph.telemetry["extraction"]
         self.assertFalse(extraction["full_text_fetched_for_expanded_nodes"])
-        self.assertEqual(extraction["model_calls_total"], 0)
-        self.assertLessEqual(extraction["model_calls_total"],
+        self.assertEqual(extraction["extractions_and_annotations"], 0)
+        self.assertLessEqual(extraction["extractions_and_annotations"],
                              extraction["budget"]["max_model_calls"])
 
 
@@ -429,8 +431,8 @@ class ForwardExpansionTest(unittest.TestCase):
         graph = expand_citations([seed], fetch_by_id=lambda keys: [],
                                  budget=ExpansionBudget(depth=1))
         telemetry = graph.telemetry
-        self.assertEqual(telemetry["citation_nodes_requested"], 1)
-        self.assertEqual(telemetry["citation_nodes_fetched"], 0)
+        self.assertEqual(telemetry["reference_keys_requested"], 1)
+        self.assertEqual(telemetry["rows_returned_by_sources"], 0)
 
 
 class ConcurrentExtractionTest(unittest.TestCase):
