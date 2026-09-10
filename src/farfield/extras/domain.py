@@ -253,6 +253,38 @@ def measure_stays_on_object(
     return True
 
 
+def measure_drift_reason(
+    measure: str,
+    claim: str,
+    mechanism: str = "",
+    topic: str = "",
+) -> str:
+    """Say which words made the measure drift, in the claim's own vocabulary.
+
+    The refusal used to be a fixed sentence about protocol fields, invariants
+    and cut-maintenance hops — the objects of the scenario it was written for.
+    A live run refused a probe for a claim about iris petal geometry and told
+    the writer to count an invariant or an index, which is not advice about
+    flowers. The reason travels back into the writer's prompt as repair
+    guidance, so a reason naming another domain's objects steers the retry
+    wrong.
+
+    Reports the actual overlap and asks for a quantity about the claim's own
+    object. The condition being refused is unchanged.
+    """
+    claim_terms = folded_terms(claim)
+    measure_terms = folded_terms(measure) - _MEASURE_PAD
+    borrowed = sorted(measure_terms & (folded_terms(mechanism) - claim_terms))[:4]
+    wanted = sorted(claim_terms - folded_terms(mechanism))[:4] or sorted(claim_terms)[:4]
+    return (
+        "the probe measure counts the mechanism"
+        + (f" ({', '.join(borrowed)})" if borrowed else "")
+        + ", not the object the claim is about"
+        + (f" ({', '.join(wanted)})" if wanted else "")
+        + "; report a quantity measured on that object"
+    )
+
+
 def experiment_stays_on_object(
     experiment: str,
     treatment_arm: str,

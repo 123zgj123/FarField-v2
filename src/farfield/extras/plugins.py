@@ -110,7 +110,7 @@ class BuiltinPlugin:
         topic: str = "",
         **kwargs: Any,
     ) -> str | None:
-        from .domain import measure_stays_on_object
+        from .domain import measure_drift_reason, measure_stays_on_object
         from .probeexp import ProbeRefused, assert_fair_probe
 
         if tree is None:
@@ -122,10 +122,12 @@ class BuiltinPlugin:
         if not measure_stays_on_object(
             measure, claim, mechanism=mechanism, topic=topic
         ):
-            return (
-                "the probe measure names the far-field mechanism's cost, not"
-                " the claim's scientific object; count the object (protocol"
-                " field, invariant, index) — not cut-maintenance hops"
+            # The condition refused here is unchanged. Only the reason is:
+            # it used to name protocol fields and cut-maintenance hops, which
+            # is not advice about a claim on petal geometry, and the reason
+            # goes back to the writer as repair guidance.
+            return measure_drift_reason(
+                measure, claim, mechanism=mechanism, topic=topic
             )
         from .worldfields import probe_reads_attested_fields
 
