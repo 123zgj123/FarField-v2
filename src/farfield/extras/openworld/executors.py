@@ -215,7 +215,7 @@ def _named_contrast(env: Any, action: Any, fixture: Any) -> Any:
     overclaim available here.
     """
     from ..dynworld import (CONTRAST_MATCHING, contrast_meaning, forward_simulate,
-                            is_contrast, levers_of, observables_of)
+                            is_contrast, levers_of, matched_contrast, observables_of)
 
     lever = str(action.extra.get("contrast") or "")
     observable = str(action.extra.get("observable") or "")
@@ -232,6 +232,17 @@ def _named_contrast(env: Any, action: Any, fixture: Any) -> Any:
             }, action_type=OBSERVE, frontier_target_id=qid)],
             extras={"outcome": WORLD_INCOMPATIBLE},
         )
+    # Matched first. The world names the strata a contrast has to match on, and
+    # comparing a stratum against the whole history leaves the difference
+    # ambiguous between the stratum and the kind of episode it came from — on
+    # this freeze, updates from heavy episodes shift false acceptance *more*
+    # than validator-writing updates do, which is precisely that confound.
+    try:
+        matched = matched_contrast(fixture, lever, observable)
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        matched = {"status": f"matching_failed:{exc!r}"}
+    if matched.get("status") == "matched":
+        return _contrast_evidence(env, action, fixture, matched)
     try:
         run = forward_simulate(fixture, lever, intensity=1.0, horizon=2)
     except (ValueError, KeyError, TypeError, OSError) as exc:
@@ -278,6 +289,55 @@ def _named_contrast(env: Any, action: Any, fixture: Any) -> Any:
         world_id=world_id_of(fixture), evidence_id=evidence_id,
         extras={"outcome": PARTIALLY_RESOLVED, "contrast": lever,
                 "observable": observable, "treatment": treatment, "control": control},
+    )
+
+
+def _contrast_evidence(env: Any, action: Any, fixture: Any,
+                       matched: Mapping[str, Any]) -> Any:
+    """QuestionEvidence from a matched contrast.
+
+    Matched, and still observational. Two recorded strata held equal is not an
+    experiment on a replayed history, and the cells that could not be matched
+    are reported rather than averaged away.
+    """
+    qid = str(action.frontier_target_id or action.target or "")
+    attested = is_attested(fixture)
+    evidence_id = "obs-" + hashlib.sha256(json.dumps(
+        [world_id_of(fixture), fixture.digest, qid, str(matched.get("lever")),
+         str(matched.get("observable")), "matched-contrast-v1"],
+        sort_keys=True).encode()).hexdigest()
+    return CandidateResult(
+        status="observed",
+        evidence={
+            "role": "QuestionEvidence", "question_id": qid,
+            "question": str(action.extra.get("question", {}).get("text") or action.target),
+            "theory_id": str(action.extra.get("theory_id") or ""),
+            "world_id": world_id_of(fixture), "world_digest": fixture.digest,
+            "evidence_id": evidence_id,
+            "contrast": str(matched.get("lever")),
+            "observable": str(matched.get("observable")),
+            "treatment": float(matched.get("treatment") or 0.0),
+            "control": float(matched.get("control") or 0.0),
+            "n_treatment": float(matched.get("n_treatment") or 0),
+            "n_control": float(matched.get("n_control") or 0),
+            "result": dict(matched),
+            "epistemic": "WORLD" if attested else "GENERATED",
+            "attested": attested, "outcome": PARTIALLY_RESOLVED,
+            "exploratory": True, "cannot_corroborate": True,
+            "causal_scope": "none",
+            "interpretation": str(matched.get("interpretation") or ""),
+            "matching": f"matched on {matched.get('matched_on')}; "
+                        f"{matched.get('cells_used')} cells used, "
+                        f"{matched.get('cells_dropped')} dropped for a one-sided arm; "
+                        f"coverage of the stratum {matched.get('coverage')}",
+            "measurement": "matched-contrast-v1", "read_from_world": True,
+            "harness_version": env.harness.version_id,
+        },
+        world_id=world_id_of(fixture), evidence_id=evidence_id,
+        extras={"outcome": PARTIALLY_RESOLVED, "contrast": matched.get("lever"),
+                "observable": matched.get("observable"),
+                "treatment": matched.get("treatment"),
+                "control": matched.get("control")},
     )
 
 

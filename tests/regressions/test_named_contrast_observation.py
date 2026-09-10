@@ -48,14 +48,22 @@ class NamedContrastTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_the_contrast_is_measured_against_the_whole_history(self):
+    def test_the_contrast_is_measured_against_a_matched_control(self):
         result = observe(self.env, contrast="contrast:validator_write",
                          observable="false_accept_fraction")
         self.assertEqual(result.status, "observed")
         evidence = result.evidence
-        self.assertEqual(evidence["n_stratum"], 112.0)
-        self.assertEqual(evidence["n_whole"], 1731.0)
+        self.assertEqual(evidence["measurement"], "matched-contrast-v1")
+        self.assertEqual(evidence["n_treatment"], 112.0)
         self.assertNotEqual(evidence["treatment"], evidence["control"])
+
+    def test_matching_is_preferred_over_the_whole_history_comparison(self):
+        """The whole-history comparison confounds the stratum with its episodes."""
+        evidence = observe(self.env, contrast="contrast:validator_write",
+                           observable="false_accept_fraction").evidence
+        self.assertIn("matched on episode template", evidence["matching"])
+        self.assertEqual(evidence["result"]["coverage"], 1.0,
+                         "every treated update should find a matched control")
 
     def test_it_is_attested_world_evidence_and_still_not_causal(self):
         evidence = observe(self.env, contrast="contrast:validator_write",
@@ -64,14 +72,14 @@ class NamedContrastTest(unittest.TestCase):
         self.assertTrue(evidence["attested"])
         self.assertEqual(evidence["causal_scope"], "none")
         self.assertTrue(evidence["cannot_corroborate"])
-        self.assertIn("not a causal claim", evidence["interpretation"])
+        self.assertIn("does not make it an experiment", evidence["interpretation"])
 
-    def test_it_reports_the_strata_it_did_not_match(self):
-        """Silence about the confound is what would make this overclaim."""
+    def test_it_reports_the_cells_it_could_not_match(self):
+        """Silence about a dropped arm is what would make this overclaim."""
         evidence = observe(self.env, contrast="contrast:validator_write",
                            observable="false_accept_fraction").evidence
-        self.assertIn("NOT matched", evidence["matching"])
-        self.assertIn("episode template", evidence["matching"])
+        self.assertIn("dropped for a one-sided arm", evidence["matching"])
+        self.assertGreater(evidence["result"]["cells_dropped"], 0)
 
     def test_an_unregistered_contrast_is_refused_not_invented(self):
         result = observe(self.env, contrast="contrast:phase_of_the_moon",
@@ -197,3 +205,114 @@ class AdvertisedObservableTest(unittest.TestCase):
                       if abs(stratum.get(name, 0) - whole.get(name, 0)) > 1e-9}
         self.assertEqual(advertised - moved, set(),
                          "advertised and identical in every stratum")
+
+
+class AdvertisedLeverTest(unittest.TestCase):
+    """A lever nobody can feel is worse than no lever: it invites the experiment.
+
+    `freeze_validators` was advertised on this freeze, applied at every
+    intensity, and moved nothing. It writes `validator_writes` and `on_cycle`;
+    only `on_cycle` is read by any observable, and this payload carries none.
+    The lever was gated on the field it *writes* rather than on the field its
+    effect is *read through*, so the one manipulable handle this world appeared
+    to offer was inert — and an interventional experiment was planned on it.
+    """
+
+    def fixture(self):
+        return __import__(
+            "farfield.extras.openworld.worldio", fromlist=["x"]
+        ).bind_fixture(Path(self.enterContext(tempfile.TemporaryDirectory())),
+                       WORLD, "")
+
+    def test_an_intervention_that_cannot_be_felt_is_not_advertised(self):
+        from farfield.extras.dynworld import levers_of
+
+        self.assertNotIn("freeze_validators", levers_of(self.fixture()))
+
+    def test_this_freeze_offers_observation_and_no_intervention(self):
+        """Worth stating: the question here is answerable only observationally."""
+        from farfield.extras.dynworld import is_contrast, levers_of
+
+        levers = levers_of(self.fixture())
+        manipulable = [name for name in levers
+                       if not is_contrast(name) and name != "dropout"]
+        self.assertEqual(manipulable, [])
+
+    def test_every_advertised_lever_moves_an_advertised_observable(self):
+        """The general property, checked rather than assumed."""
+        from farfield.extras import dynworld
+
+        fixture = self.fixture()
+        observables = set(dynworld.observables_of(fixture))
+        whole = dict(dict(list(dynworld.forward_simulate(
+            fixture, "dropout", intensity=0.0, horizon=1)["steps"])[0]
+            .get("observables") or {}))
+        for lever in dynworld.levers_of(fixture):
+            with self.subTest(lever=lever):
+                run = dynworld.forward_simulate(fixture, lever, intensity=1.0,
+                                                horizon=2)
+                after = dict(dict(list(run["steps"])[-1].get("observables") or {}))
+                moved = [name for name in observables
+                         if abs(after.get(name, 0) - whole.get(name, 0)) > 1e-9]
+                self.assertTrue(moved, f"{lever} moves nothing it can be judged by")
+
+
+class MatchedContrastTest(unittest.TestCase):
+    """Matching on the strata the world names, or saying it could not.
+
+    `CONTRAST_MATCHING` named episode template and updates-per-episode and
+    nothing matched on them, so a difference could be the stratum or could be
+    which episodes it came from. That is not hypothetical here: on this freeze
+    updates from heavy episodes shift false acceptance *more* than
+    validator-writing updates do, which is exactly the competing explanation
+    the live run registered against its own hypothesis.
+    """
+
+    def fixture(self):
+        return __import__(
+            "farfield.extras.openworld.worldio", fromlist=["x"]
+        ).bind_fixture(Path(self.enterContext(tempfile.TemporaryDirectory())),
+                       WORLD, "")
+
+    def test_the_effect_is_reported_with_both_arms_and_their_sizes(self):
+        from farfield.extras.dynworld import matched_contrast
+
+        row = matched_contrast(self.fixture(), "contrast:validator_write",
+                               "false_accept_fraction")
+        self.assertEqual(row["status"], "matched")
+        self.assertEqual(row["n_treatment"], 112)
+        self.assertGreater(row["n_control"], row["n_treatment"])
+        self.assertEqual(row["coverage"], 1.0)
+
+    def test_a_contrast_defined_by_a_matching_variable_is_refused(self):
+        """heavy_episode *is* updates-per-episode, so no cell holds both arms."""
+        from farfield.extras.dynworld import matched_contrast
+
+        row = matched_contrast(self.fixture(), "contrast:heavy_episode",
+                               "false_accept_fraction")
+        self.assertEqual(row["status"], "no_matched_cell",
+                         "a degenerate comparison must refuse, not return a number")
+
+    def test_it_stays_observational_however_well_matched(self):
+        from farfield.extras.dynworld import matched_contrast
+
+        row = matched_contrast(self.fixture(), "contrast:validator_write",
+                               "mean_accepted_return")
+        self.assertEqual(row["causal_scope"], "none")
+        self.assertIn("does not make it an experiment", row["interpretation"])
+
+    def test_a_non_contrast_lever_is_not_treated_as_one(self):
+        from farfield.extras.dynworld import matched_contrast
+
+        row = matched_contrast(self.fixture(), "dropout", "accepted_fraction")
+        self.assertEqual(row["status"], "not_a_contrast")
+
+    def test_the_same_query_gives_the_same_numbers(self):
+        from farfield.extras.dynworld import matched_contrast
+
+        first = matched_contrast(self.fixture(), "contrast:divergent",
+                                 "accepted_fraction")
+        second = matched_contrast(self.fixture(), "contrast:divergent",
+                                  "accepted_fraction")
+        self.assertEqual(first["treatment"], second["treatment"])
+        self.assertEqual(first["control"], second["control"])

@@ -1095,7 +1095,13 @@ def _levers_program(state: dict[str, Any]) -> tuple[str, ...]:
     levers = ["dropout"]
     if "cycles" in features:
         levers.append("replay_gate")
-    if "validator_writes" in features:
+    # Freezing validators lands on `validator_writes` and `on_cycle`; of those
+    # only `on_cycle` is read by any observable. Gating on `validator_writes`
+    # gated the lever on the field it *writes* rather than the field its effect
+    # is *read through*, so on a freeze without cycles it was advertised,
+    # applied, and moved nothing at any intensity — an intervention that cannot
+    # be felt, offered as the one manipulable handle this world had.
+    if "validator_writes" in features and "cycles" in features:
         levers.append("freeze_validators")
     for name, (feature, _meaning) in PROGRAM_CONTRASTS.items():
         if feature in features:
@@ -1197,6 +1203,119 @@ _BRIDGES: dict[str, dict[str, Any]] = {
     },
 }
 _BRIDGES["undirected_named_graph"] = _BRIDGES["undirected_graph"]
+
+
+def _episode_repo(episode: str) -> str:
+    """`astropy__astropy-12907` -> `astropy__astropy`. The template, not the task."""
+    text = str(episode or "")
+    return text.rsplit("-", 1)[0] if "-" in text else text
+
+
+def _burden_bucket(count: int) -> str:
+    """Updates per episode, in the bands the contrast table already uses."""
+    if count <= 1:
+        return "1"
+    if count <= 3:
+        return "2-3"
+    if count <= 7:
+        return "4-7"
+    return "8+"
+
+
+def matched_contrast(
+    fixture: WorldFixture, lever: str, observable: str
+) -> dict[str, Any]:
+    """A stratum against its complement *within* matched cells.
+
+    ``CONTRAST_MATCHING`` names episode template and updates-per-episode as the
+    strata a contrast on this history has to match on, and nothing matched on
+    them: the comparison was the stratum against the whole history, so a
+    difference could be the stratum or could be which episodes it came from.
+    On the Live-SWE-agent freeze that is not hypothetical — updates from
+    heavy episodes show a *larger* shift in false acceptance than
+    validator-writing updates do, which is exactly the confound.
+
+    Each cell is (repo template, updates-per-episode band). Cells with both
+    arms populated contribute; cells with only one arm are reported as dropped
+    rather than silently averaged in. The control side is standardised to the
+    treatment's cell distribution, so the two arms answer the same question
+    about the same kinds of episode.
+
+    Deterministic, and no model call. It is still observational: matching on
+    two recorded strata does not make a replayed history an experiment.
+    """
+    bridge = _bridge_of(fixture)
+    if not bridge or not is_contrast(lever):
+        return {"status": "not_a_contrast", "lever": lever}
+    state = bridge["load"](fixture.root)
+    updates = [dict(row) for row in (state.get("updates") or [])]
+    if not updates:
+        return {"status": "no_updates", "lever": lever}
+
+    per_episode: dict[str, int] = {}
+    for row in updates:
+        per_episode[str(row.get("episode") or "")] = per_episode.get(
+            str(row.get("episode") or ""), 0) + 1
+
+    def cell_of(row: dict[str, Any]) -> tuple[str, str]:
+        episode = str(row.get("episode") or "")
+        return (_episode_repo(episode), _burden_bucket(per_episode.get(episode, 0)))
+
+    def measure(rows: list[dict[str, Any]]) -> float | None:
+        if not rows:
+            return None
+        value = bridge["observe"]({**state, "updates": rows}).get(observable)
+        return None if value is None else float(value)
+
+    cells: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+    for row in updates:
+        arm = "treatment" if _in_contrast(row, lever, state) else "control"
+        cells.setdefault(cell_of(row), {"treatment": [], "control": []})[arm].append(row)
+
+    used, dropped = [], []
+    treated_total = 0
+    for cell, arms in sorted(cells.items()):
+        if not arms["treatment"] or not arms["control"]:
+            dropped.append({"cell": list(cell),
+                            "n_treatment": len(arms["treatment"]),
+                            "n_control": len(arms["control"])})
+            continue
+        left, right = measure(arms["treatment"]), measure(arms["control"])
+        if left is None or right is None:
+            dropped.append({"cell": list(cell), "reason": "observable_undefined"})
+            continue
+        treated_total += len(arms["treatment"])
+        used.append({"cell": list(cell), "weight": len(arms["treatment"]),
+                     "treatment": left, "control": right,
+                     "n_treatment": len(arms["treatment"]),
+                     "n_control": len(arms["control"])})
+    if not used or not treated_total:
+        return {"status": "no_matched_cell", "lever": lever,
+                "observable": observable, "dropped_cells": len(dropped)}
+
+    treatment = sum(row["treatment"] * row["weight"] for row in used) / treated_total
+    control = sum(row["control"] * row["weight"] for row in used) / treated_total
+    return {
+        "status": "matched",
+        "rule": "matched-contrast-v1",
+        "lever": lever,
+        "meaning": contrast_meaning(lever),
+        "observable": observable,
+        "matched_on": CONTRAST_MATCHING,
+        "treatment": round(treatment, 6),
+        "control": round(control, 6),
+        "difference": round(treatment - control, 6),
+        "n_treatment": sum(row["n_treatment"] for row in used),
+        "n_control": sum(row["n_control"] for row in used),
+        "cells_used": len(used),
+        "cells_dropped": len(dropped),
+        "dropped_examples": dropped[:5],
+        "coverage": round(treated_total / max(1, sum(
+            1 for row in updates if _in_contrast(row, lever, state))), 6),
+        "causal_scope": "none",
+        "interpretation": "matched observational contrast on a replayed history; "
+                          "matching two recorded strata does not make it an experiment",
+    }
 
 
 def _bridge_of(fixture: WorldFixture) -> dict[str, Any] | None:
