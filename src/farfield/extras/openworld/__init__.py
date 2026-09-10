@@ -133,6 +133,10 @@ class OpenWorld:
     history: list[dict[str, Any]] = field(default_factory=list)
     log: EventLog = field(default_factory=EventLog)
     workers_connected: bool = False
+    # Set by `load` when a stored snapshot disagreed with its own event log.
+    # Outside canonical state on purpose: recording it inside would change the
+    # rebuilt state's digest and break the equality being checked.
+    replay_divergence: dict[str, Any] | None = None
 
     def connect_workers(self, adapter: Any) -> None:
         """Bind worker services, never their own orchestration loop or state writer."""
@@ -178,6 +182,32 @@ class OpenWorld:
         notebook = load_notebook(workspace)
         if state_is_empty(env.state) and notebook is not None:
             sync_from_notebook(env.state, notebook)
+        # The log is the only writer, so on a resume it is also the authority.
+        # A stored state that disagrees with its own log is not a tie to break
+        # by preference: it means the saved snapshot was produced by different
+        # derivation code, and continuing from it would carry a state the log
+        # cannot account for. Rebuild, and record that it happened rather than
+        # doing it silently.
+        if env.log.events:
+            from .reducer import rebuild_state, state_digest
+
+            replayed = rebuild_state(env.log)
+            loaded = state_digest(env.state)
+            if loaded != state_digest(replayed):
+                # The record lives on the environment, not in the state. Writing
+                # it into canonical state would change the rebuilt state's own
+                # digest, so the state would no longer equal its replay — the
+                # invariant this check exists to protect.
+                env.replay_divergence = {
+                    "rule": "replay-divergence-v1",
+                    "loaded_digest": loaded,
+                    "replayed_digest": state_digest(replayed),
+                    "events": len(env.log.events),
+                    "resolution": "rebuilt_from_the_event_log",
+                    "cause": "a snapshot saved by different derivation code; the "
+                             "log is the only writer, so it is the authority",
+                }
+                env.state = replayed
         env.state.harness_version = env.harness.version_id
         env.state.available_capabilities = list(
             dict.fromkeys(
