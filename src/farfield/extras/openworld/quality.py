@@ -182,10 +182,6 @@ REPAIR_DIMENSION = {
 }
 
 
-class CaveatOnlyRepair(ValueError):
-    """An objection that needs a world was answered with prose."""
-
-
 @dataclass(frozen=True)
 class ReviewRecord:
     """A structured objection that is allowed to change the research plan."""
@@ -333,7 +329,8 @@ def resolution_admissible(
         return False, f"resolution_evidence_not_in_state: {eid}"
     if not (row.get("promotion_ok") and str(row.get("epistemic") or "") == "WORLD" and row.get("attested")):
         return False, f"resolution_evidence_did_not_promote_to_world: {eid}"
-    if int(row.get("raised_after_tick") or 0) and int(row.get("raised_after_tick")) < record.raised_at_tick:
+    admitted = row.get("admitted_at_tick")
+    if isinstance(admitted, int) and admitted < record.raised_at_tick:
         return False, f"resolution_evidence_predates_objection: {eid}"
     return True, ""
 

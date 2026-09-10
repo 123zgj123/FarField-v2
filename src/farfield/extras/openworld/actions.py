@@ -343,6 +343,29 @@ def _has_theory_for(state: ScientificState, question_id: str) -> bool:
     )
 
 
+def sole_support(state: ScientificState, row: Mapping[str, Any]) -> bool:
+    """Is this row the only admitted evidence its hypothesis rests on?
+
+    The old test read ``high_impact`` and ``source_count`` from the evidence
+    row. Nothing in the runtime wrote either field, so a whole class of
+    verification debt — a consequential claim standing on one measurement —
+    could never be raised. Whether a row stands alone is a fact about the state
+    and is computed here rather than waited for.
+    """
+    tid = str(row.get("theory_id") or "")
+    if not tid:
+        return False
+    supporting = {
+        str(item.get("evidence_id") or "")
+        for item in state.evidence_records
+        if str(item.get("theory_id") or "") == tid
+        and str(item.get("epistemic") or "") == "WORLD"
+        and item.get("promotion_ok")
+        and (item.get("outcome") or item.get("verdict")) == "supports"
+    }
+    return supporting == {str(row.get("evidence_id") or "")}
+
+
 def _needs_verify(state: ScientificState) -> bool:
     if state.contradictions:
         return True
@@ -356,7 +379,7 @@ def _needs_verify(state: ScientificState) -> bool:
             continue
         if int(row.get("verify_count") or 0) < 1:
             return True
-        if row.get("high_impact") and int(row.get("source_count") or 1) <= 1:
+        if sole_support(state, row) and not row.get("replication_of"):
             return True
     return False
 
@@ -365,7 +388,7 @@ def _verify_kind(state: ScientificState) -> str:
     if state.contradictions:
         return VERIFY_ALTERNATIVE_EXPLANATION
     for row in state.evidence_records:
-        if row.get("high_impact") and int(row.get("source_count") or 1) <= 1:
+        if sole_support(state, row) and not row.get("replication_of"):
             return VERIFY_HIGH_IMPACT_CLAIM
         if str(row.get("outcome") or row.get("verdict") or "") in {"weakens", "negative"}:
             return VERIFY_NEGATIVE_RESULT
@@ -374,9 +397,10 @@ def _verify_kind(state: ScientificState) -> str:
 
 def _causal_ready(state: ScientificState, extra: Mapping[str, Any] | None = None) -> bool:
     row = dict(extra or {})
-    if row.get("causal_handle") and row.get("measure") and (row.get("freeze") or state.world_id):
-        return True
-    return bool(row.get("causal_identification_ready"))
+    # A handle, a measure and a freeze. There was a second path here reading
+    # ``causal_identification_ready``, which nothing ever set.
+    return bool(row.get("causal_handle") and row.get("measure")
+                and (row.get("freeze") or state.world_id))
 
 
 def eligible_actions(

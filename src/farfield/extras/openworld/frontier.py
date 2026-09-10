@@ -90,7 +90,17 @@ def frontier_from_state(state: ScientificState) -> dict[str, Any]:
     }
 
 
+def _sole_support_row(state: ScientificState, row: Mapping[str, Any]) -> bool:
+    from .actions import sole_support
+
+    return sole_support(state, row)
+
+
 def debt_from_state(state: ScientificState) -> dict[str, int]:
+    """Research debt. ``archive_debt`` was removed: it read a metric key
+    (``working_archive``) that no code wrote, so it was always zero, and the
+    working archive lives outside ScientificState where the reducer cannot see
+    it."""
     world_ev = [
         row
         for row in state.evidence_records
@@ -100,7 +110,7 @@ def debt_from_state(state: ScientificState) -> dict[str, int]:
         row
         for row in world_ev
         if int(row.get("verify_count") or 0) < 1
-        or (row.get("high_impact") and int(row.get("source_count") or 1) <= 1)
+        or (_sole_support_row(state, row) and not row.get("replication_of"))
     ]
     stale_worlds = max(0, len(state.world_versions) - 1) if state.world_versions else 0
     unused_caps = [
@@ -114,7 +124,6 @@ def debt_from_state(state: ScientificState) -> dict[str, int]:
         if not row.get("discriminating_predictions")
         or not any(pred.get("competitor_differs") for pred in row.get("discriminating_predictions") or [])
     ]
-    archive_working = int((state.metrics or {}).get("working_archive") or 0)
     return {
         "verification_debt": len(unverified),
         "contradiction_debt": len(state.contradictions),
@@ -122,7 +131,6 @@ def debt_from_state(state: ScientificState) -> dict[str, int]:
         "capability_debt": len(state.missing_capabilities) + len(unused_caps),
         "unresolved_dependency": len(state.blocked_questions)
         + sum(1 for row in state.open_questions if row.get("required_observable") or row.get("required_capability")),
-        "archive_debt": max(0, archive_working - len(world_ev)),
         "orphan_theory_debt": len(orphan_theories),
     }
 
@@ -195,9 +203,6 @@ def graph_from_state(state: ScientificState) -> dict[str, Any]:
         relation = str(row.get("theory_relation") or row.get("verdict") or "")
         if tid and relation in {"supports", "weakens", "contradicts"}:
             edge(eid, relation, tid)
-        produced = str(row.get("produced_by") or "")
-        if produced:
-            edge(produced, "produced_by", eid)
     for name in state.available_capabilities:
         node("Capability", name, status="available")
     for name in state.missing_capabilities:

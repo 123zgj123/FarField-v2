@@ -93,6 +93,10 @@ def reduce_event(
     elif kind == "EvidenceAdded":
         row = dict(payload)
         row.setdefault("scientific_event_id", event.event_id)
+        # When this evidence entered the state. An objection cannot be closed by
+        # evidence that predates it, and that check had nothing to compare
+        # against until the tick was recorded here.
+        row.setdefault("admitted_at_tick", int(current.ticks))
         if refuse_generated_promotion(row) and str(row.get("epistemic") or "") == "WORLD":
             row["epistemic"] = "GENERATED"
             row["promotion_refused"] = refuse_generated_promotion(row)
@@ -207,8 +211,11 @@ def reduce_event(
         elif payload.get("gap"):
             current.note_missing(str(payload.get("gap")))
     elif kind == "ContradictionDetected":
-        row = dict(payload)
-        if row not in current.contradictions:
+        # An explicitly reported contradiction — one the runtime could not derive
+        # from evidence alone, such as a conflict with verified literature.
+        row = dict(payload, source="reported")
+        row.setdefault("id", f"reported:{row.get('theory_id','')}:{event.event_id}")
+        if not any(item.get("id") == row["id"] for item in current.contradictions):
             current.contradictions.append(row)
     elif kind == "LineageForked":
         for lid in payload.get("lineages") or []:

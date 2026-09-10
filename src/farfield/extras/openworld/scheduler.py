@@ -125,15 +125,11 @@ def epistemic_safe(action: ActionInstance, state: ScientificState) -> bool:
 def budget_ok(action: ActionInstance, state: ScientificState) -> bool:
     """Refuse actions that would cross a declared limit.
 
-    ``metrics["spent_cost"]`` / ``metrics["budget_cap"]`` are kept for callers
-    that set them explicitly. The contract's resource limits are the real check:
-    before this, both metric keys were read here and written nowhere, so the
-    budget filter never refused anything.
+    This used to consult ``metrics["spent_cost"]`` against
+    ``metrics["budget_cap"]``. Nothing in the runtime ever wrote either key, so
+    the comparison could not be false and the filter refused nothing. The
+    contract's resource limits, measured from admitted events, are the check.
     """
-    spent = float((state.metrics or {}).get("spent_cost") or 0)
-    cap = float((state.metrics or {}).get("budget_cap") or 1e9)
-    if spent + float(action.spec.estimated_cost) > cap:
-        return False
     from .resources import affordable
 
     return affordable(state, cost=float(action.spec.estimated_cost))
@@ -506,10 +502,6 @@ def _experiment_gap(action: ActionInstance, state: ScientificState) -> str:
         return ""
     verdict = hypothesis_resolution_priority(action.extra["experiment_proposal"], state)
     return "" if verdict["valid"] else f"invalid_experiment_proposal:{verdict['reason']}"
-
-
-def _valid_experiment(action: ActionInstance, state: ScientificState) -> bool:
-    return not _experiment_gap(action, state)
 
 
 def admissible(

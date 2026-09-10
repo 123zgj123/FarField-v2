@@ -1,4 +1,11 @@
-"""Research State: the single long-term memory of the production path.
+"""Research State: the legacy long-term memory, no longer the production path.
+
+Reachable only through ``mission.py``. The production controller's canonical
+state is ``openworld/state.py::ScientificState``; this module is kept for the
+legacy pipeline and its regression oracles. Its own description used to read
+"the single long-term memory of the production path", which was true once and
+has not been for some time — a stale claim of authority is how two stores end
+up believed at the same time.
 
 One store per (corpus, anchor concept), remembering four different kinds
 of fact — and keeping them apart, because they answer different questions:

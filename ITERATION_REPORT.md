@@ -351,3 +351,150 @@ state, review, redesign, resource and termination paths against a real model and
 a real attested world. What remains unvalidated live: PROJECT_PIVOT, heldout
 replication transfer, and any run long enough to test goal maintenance across
 tens of actions — every segment here ended on budget at ten ticks.
+
+---
+
+## Round 8 — audit, cleanup, and a register that can fail
+
+A full static audit of 116 modules (import reachability, AST reference counting,
+event/action contract reconciliation) plus reading three real auto-research
+systems.
+
+### What the audit found
+
+**One dead capability.** `state.contradictions` had exactly two writers: a
+`ContradictionDetected` event no code emitted, and a branch-merge helper with no
+live caller. Twelve consumers read it — contradiction debt, VERIFY eligibility
+and kind, SYNTHESIZE eligibility, `blocked_descendants`, contradiction-resolution
+progress and rate, the belief refresh's "unresolved contradictions keep the
+mechanism speculative" rule, quality's technical-correctness cap, the readiness
+gate `no_critical_unresolved_contradiction`, and the decision journal. All
+twelve read a list that could not fill. **A gate guarding a condition that
+cannot arise reads as permanently satisfied**, which is worse than no gate.
+
+Contradictions are now derived from canonical evidence: two independently
+admitted WORLD rows about one hypothesis, on different experiment identities,
+pointing opposite ways. Explicitly reported contradictions still come through the
+event and survive the derived pass.
+
+**Seven dead reads in decision paths**, each a decision resting on a value that
+never arrives:
+
+| Field | Effect | Resolution |
+|---|---|---|
+| `spent_cost`, `budget_cap` | the budget branch could not be false | removed; measured spend is the check |
+| `high_impact`, `source_count` | high-impact verification debt unraisable | computed from state as `sole_support` |
+| `working_archive` | `archive_debt` always zero | removed; it is not computable from state |
+| `causal_identification_ready` | a second probe-readiness path nothing supplied | removed |
+| `valid_in_worlds` | archive cross-world projection always fell back | written where transfer is established |
+| `produced_by` | a graph edge never generated | removed |
+| `raised_after_tick` | "evidence must not predate the objection" never fired | evidence now carries `admitted_at_tick` |
+
+Three of these were introduced by earlier rounds of this work.
+
+**Sixteen of thirty-nine event types are never emitted**, though the contract is
+closed in the dangerous direction: nothing is emitted that the reducer drops.
+**Thirty-four functions are defined and never referenced**, six in the control
+plane, two of them left by this work.
+
+**About a quarter of the codebase does no work on any product path.** Eleven
+modules (~3,500 lines) are unreachable from every entrypoint, including a v1/v2
+evaluation stack whose own docstring calls it "the baseline the v2 generator must
+beat" — with no entrypoint anywhere that runs the comparison. A further eleven
+modules (~10,900 lines) are reachable only because `cli.py` imports one helper
+from `mission.py`. One of them, `extras/state.py`, still described itself as *"the
+single long-term memory of the production path"* after leaving that path; that
+docstring is corrected, since a stale claim of authority is how two stores come
+to be believed at once. The dead-module removal is left as an explicit decision
+rather than taken unilaterally.
+
+### The structural fix: a register that can fail
+
+Every defect above shares one shape — a claim that outlived its implementation,
+described in prose, believed, never asked to demonstrate itself. Fixing them
+one at a time does not stop the next one.
+
+`capabilities.py` makes the class machine-checkable. Each of seventeen
+capabilities carries the module that performs it, the test that guards it, and an
+**executable probe that builds a real state and asserts the mechanism fires**.
+A capability claiming `implemented` without a probe is itself a failing entry;
+`partial` and `absent` must state their limits. The enforcing test also asserts
+that the audit *can* fail, because a check that cannot fail is the thing being
+prevented.
+
+Thirteen probes fire, three capabilities are `partial` with stated limits, and
+the pivot probe was added when the first version of the register let an
+`implemented` claim pass unchecked — the register catching its own instance of
+the defect it exists to catch.
+
+### What the reference systems contributed
+
+Three were readable. `apexin-ai/agent-ml-research` is private; access was
+supplied. "Microsoft Argus" could not be found — the nearest Microsoft system
+located was **Magentic-One** on AutoGen (an outer-loop manager holding a task
+ledger, inner-loop specialists), and no claim is made here about a system that
+could not be verified to exist.
+
+**apexin-ai/agent-ml-research** — a production SaaS (268 MB, EKS/Terraform/
+payments) around ML research agents. Its `agent_ml_shared/contracts/` package is
+the strongest idea encountered: every contract is a Markdown file whose YAML
+frontmatter declares `authority: normative`, `status: implemented`, and a
+`scope:` listing the implementation files **and its own enforcing test**. Its
+`EXPERIMENT_STATE.md` states authority per runtime mode in a table — exactly the
+ambiguity FarField had between ScientificState, the notebook, and
+`extras/state.py`. **Adopted**: the contract shape, in `contracts/`, with the
+addition that `live_path` is executable rather than a file reference. Also noted
+and not adopted: `immutable_image.py` pins experiments to a container image;
+FarField pins source and world digests but not the execution environment.
+
+**dualverse-ai/station** — an open-world multi-agent research environment with
+published mathematical discoveries. Two things it does that FarField does not:
+
+1. **It scopes itself honestly.** "Station is suitable for tasks that meet two
+   conditions: *scorable* — each run can be evaluated with a clear score; *fast
+   iteration* — each run finishes within roughly two hours." FarField accepts an
+   arbitrary topic and then fails closed. Station's precondition is the more
+   useful contract.
+2. **The evaluator is per-task code**, not a generic heuristic —
+   `research/evaluators/evaluator.py` beside `baseline.yaml` and
+   `research_task.md`. Its **breakthrough detector** is canonical, deterministic,
+   persisted, and consumed by stagnation, lineage evolution and reporting alike,
+   with an explicit `BREAKTHROUGH_EPS` and reconstruction on restart. FarField's
+   quality state is twelve generic ordinal dimensions with **no task-defined
+   score**, so it has no notion of a breakthrough at all.
+
+   Station's stagnation escalates through levels on 320 ticks without a
+   breakthrough and assigns lanes — Exploration, Exploitation, Revival,
+   Understanding, Strategy. FarField's `LANES` constant is *the same five lanes*
+   minus Strategy, which suggests shared lineage; but FarField's fork does not
+   run parallel branches, while Station's multistart genuinely forks seeds at
+   init and at stagnation and selects among them.
+
+   **Not adopted this round.** A per-task evaluator and real parallel multistart
+   are the two largest genuine capability gaps, and both are substantial enough
+   that claiming them without building them would repeat the exact defect this
+   round exists to remove.
+
+**wanshuiyin/Auto-claude-code-research-in-sleep (ARIS)** — 82 Markdown skills,
+no framework. Two ideas worth recording: its guide states *"This file is a
+routing index, not a specification... if this guide conflicts with a SKILL.md,
+the SKILL.md wins"* — a declared conflict-resolution rule between documents,
+which `contracts/README.md` now mirrors. And it records **reviewer
+independence** on the acceptance record: a same-model-family review is stamped
+`review_independence: same-family`, `acceptance_status: provisional`, and *"never
+describe base Codex self-review as cross-model acceptance."* FarField's
+`ReviewRecord` marks reviewer judgment as not-evidence but has no notion of
+reviewer independence; the same model that wrote a hypothesis could assess its
+novelty. **Recorded as a gap, not claimed as fixed.**
+
+Tests: 1416 passing, up from 1391.
+
+### On "the strongest system"
+
+That is not a claim this round can support, and the register exists specifically
+to stop such claims being made. What this round did is narrower and checkable:
+the capabilities FarField lists are now the capabilities it has, each with a
+probe that fails when that stops being true. Matching claims to reality is a
+precondition for being good at research, not evidence of it. The two gaps most
+likely to matter — a task-defined score, and multistart that actually branches —
+are named above and remain unbuilt.

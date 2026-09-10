@@ -867,7 +867,13 @@ class LegacyResearchWorkers:
                     executable_ok=bool(host.get("ok")), transfer_ok=supports_transfer,
                     cross_world_transfer=supports_transfer, independent_replication=independent and reproduced,
                     replication="E3_independent" if independent else "E2_scale_replication",
-                    world_compatible=True, host_record=host)
+                    world_compatible=True, host_record=host,
+                    # Where this result is known to hold. Read by the archive
+                    # projection to decide what is still relevant after the
+                    # controller binds a different world; nothing wrote it
+                    # before, so that projection always fell back.
+                    valid_in_worlds=([world.id, heldout.id] if supports_transfer
+                                     else [heldout.id]))
                 _json(new_folder / "probe.json", replicated)
                 return CandidateResult(status="replicated" if supports_transfer else "replication_inconclusive",
                     events=[make_event("EvidenceAdded", replicated, action_type=VERIFY,

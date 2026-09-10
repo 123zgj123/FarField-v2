@@ -118,6 +118,66 @@ def refresh_research_views(state: "ScientificState") -> None:
     state.belief_states = beliefs
     state.verified_research_state = verified
     state.speculative_frontier = [tid for tid in beliefs if tid not in verified]
+    refresh_contradictions(state)
+
+
+def refresh_contradictions(state: "ScientificState") -> None:
+    """Derive contradictions from admitted evidence that disagrees with itself.
+
+    ``state.contradictions`` had exactly two writers: a ``ContradictionDetected``
+    event no code ever emitted, and a branch-merge helper with no live caller.
+    Everything that consumed it — verification debt, VERIFY eligibility, the
+    readiness gate, the belief refresh's own "unresolved contradictions keep the
+    mechanism speculative" rule — was reading a list that could never fill. A
+    listed capability that cannot fire is worse than an absent one, because the
+    gate it guards reads as satisfied.
+
+    A contradiction here is a fact, not a judgment: two independently admitted
+    WORLD rows about the same hypothesis, on different experiment identities,
+    pointing opposite ways. Two runs of the same experiment on the same freeze
+    are one observation and are not in tension with themselves.
+
+    Rows reported explicitly through the event remain; derived rows are
+    recomputed from canonical evidence on every replay, so the two never fight.
+    """
+    reported = [dict(row) for row in state.contradictions
+                if str(row.get("source") or "") == "reported"]
+    derived: list[dict[str, Any]] = []
+    for theory in state.theories:
+        tid = str(theory.get("id") or "")
+        belief = state.belief_states.get(tid) or {}
+        supporting = list(belief.get("supporting_evidence") or [])
+        contradicting = list(belief.get("contradicting_evidence") or [])
+        if not (supporting and contradicting):
+            continue
+        by_id = {str(row.get("evidence_id") or ""): row for row in state.evidence_records}
+        for positive in supporting:
+            for negative in contradicting:
+                left, right = by_id.get(positive, {}), by_id.get(negative, {})
+                if left.get("experiment_digest") == right.get("experiment_digest"):
+                    continue  # the same experiment cannot contradict itself
+                derived.append({
+                    "id": f"contradiction:{tid}:{positive}:{negative}",
+                    "theory_id": tid,
+                    "question_id": str(left.get("question_id") or right.get("question_id") or ""),
+                    "supporting_evidence_id": positive,
+                    "contradicting_evidence_id": negative,
+                    "worlds": sorted({str(left.get("world_id") or ""),
+                                      str(right.get("world_id") or "")}),
+                    "source": "derived",
+                    "basis": "two_admitted_world_results_on_the_same_hypothesis_disagree",
+                    "epistemic": "WORLD",
+                })
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for row in reported + derived:
+        key = str(row.get("id") or row.get("evidence_id") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        merged.append(row)
+    state.contradictions = merged
 
 
 def _copy_rows(rows: Any) -> list[dict[str, Any]]:

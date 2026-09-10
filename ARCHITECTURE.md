@@ -320,6 +320,24 @@ blocks and reports which world would have satisfied the gap. A wrongly matched
 world still produces genuine WORLD evidence — it just answers a question nobody
 asked, which is why the default is to stay blocked and say so.
 
+## Capability register
+
+Every capability this runtime claims is listed in
+[capabilities.py](src/farfield/extras/openworld/capabilities.py) with the module
+that performs it, the test that guards it, and an **executable probe that builds
+a real state and asserts the mechanism fires**. A capability claiming
+`implemented` without a probe is a failing entry.
+
+This exists because the repeated defect here was never broken code — it was a
+claim that outlived its implementation. Contradiction tracking had two writers
+and neither could run; the budget filter compared metric keys nothing wrote; the
+experimental-adequacy bar demanded a sample size no worker reported. Each was
+described in prose, believed, and never asked to demonstrate itself. A gate
+guarding a condition that cannot arise reads as permanently satisfied.
+
+[contracts/CAPABILITIES.md](contracts/CAPABILITIES.md) is the normative
+statement. Where this file and the register disagree, the register wins.
+
 ## Operational boundaries
 
 - Sessions have a finite horizon and service budget. Python callers can resume
