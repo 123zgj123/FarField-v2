@@ -145,3 +145,55 @@ class ContrastOfferingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdvertisedObservableTest(unittest.TestCase):
+    """A world must not advertise a measure its payload cannot produce.
+
+    The lever table already refuses to offer a handle the payload cannot feel.
+    An observable nobody can move is the same promise broken from the other
+    side, and it cost a live run half its hypotheses: one of the two predicted
+    a rise in `cycle_fraction` on a freeze where no row carries `on_cycle`, so
+    the measure read zero in every stratum and the prediction could never have
+    been answered either way.
+    """
+
+    def fixture(self):
+        return __import__(
+            "farfield.extras.openworld.worldio", fromlist=["x"]
+        ).bind_fixture(Path(self.enterContext(tempfile.TemporaryDirectory())),
+                       WORLD, "")
+
+    def test_a_measure_with_no_feature_behind_it_is_not_advertised(self):
+        from farfield.extras.dynworld import observables_of
+
+        self.assertNotIn("cycle_fraction", observables_of(self.fixture()))
+
+    def test_the_measures_that_remain_are_the_ones_the_payload_carries(self):
+        from farfield.extras.dynworld import observables_of
+
+        self.assertEqual(
+            observables_of(self.fixture()),
+            ("accepted_fraction", "false_accept_fraction",
+             "mean_accepted_return", "n_updates"))
+
+    def test_every_advertised_measure_actually_differs_across_some_stratum(self):
+        """The check that would have caught it: a measure that never moves."""
+        from farfield.extras import dynworld
+
+        fixture = self.fixture()
+        advertised = set(dynworld.observables_of(fixture)) - {"n_updates"}
+        moved: set[str] = set()
+        whole = dict(dict(list(dynworld.forward_simulate(
+            fixture, "dropout", intensity=0.0, horizon=1)["steps"])[0]
+            .get("observables") or {}))
+        for lever in dynworld.levers_of(fixture):
+            if not dynworld.is_contrast(lever):
+                continue
+            stratum = dict(dict(list(dynworld.forward_simulate(
+                fixture, lever, intensity=1.0, horizon=2)["steps"])[-1]
+                .get("observables") or {}))
+            moved |= {name for name in advertised
+                      if abs(stratum.get(name, 0) - whole.get(name, 0)) > 1e-9}
+        self.assertEqual(advertised - moved, set(),
+                         "advertised and identical in every stratum")

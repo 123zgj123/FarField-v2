@@ -1056,6 +1056,34 @@ def _in_contrast(row: dict[str, Any], lever: str, state: dict[str, Any]) -> bool
     return False
 
 
+# What each program observable needs the payload to carry. The lever table
+# already refuses to advertise a handle the payload cannot feel; an observable
+# nobody can move is the same promise broken from the other side. A live run
+# spent one of its two hypotheses predicting a rise in `cycle_fraction` on a
+# freeze where no row carries `on_cycle`, so the measure was zero in every
+# stratum and the hypothesis could never have been answered.
+PROGRAM_OBSERVABLE_FEATURES: dict[str, tuple[str, ...]] = {
+    "n_updates": (),
+    "accepted_fraction": ("updates",),
+    "cycle_fraction": ("cycles",),
+    "mean_accepted_return": ("oracle",),
+    # False acceptance needs the independent oracle, or the divergence proxy
+    # when the world has none. Either satisfies it; neither present, and the
+    # measure has nothing to read.
+    "false_accept_fraction": ("oracle", "divergent"),
+}
+
+
+def _observables_program(state: dict[str, Any]) -> tuple[str, ...]:
+    """Only advertise measures the payload can actually produce."""
+    features = _string_set(state.get("features") or ())
+    computed = _observe_program(state)
+    return tuple(sorted(
+        name for name in computed
+        if not PROGRAM_OBSERVABLE_FEATURES.get(name, ())
+        or features & set(PROGRAM_OBSERVABLE_FEATURES[name])))
+
+
 def _levers_program(state: dict[str, Any]) -> tuple[str, ...]:
     """Only advertise handles the payload can feel.
 
@@ -1165,6 +1193,7 @@ _BRIDGES: dict[str, dict[str, Any]] = {
         "apply": _lever_program,
         "levers": ("dropout",),
         "levers_for": _levers_program,
+        "observables_for": _observables_program,
     },
 }
 _BRIDGES["undirected_named_graph"] = _BRIDGES["undirected_graph"]
@@ -1249,10 +1278,18 @@ def compose_simulation(fixture: WorldFixture | None) -> dict[str, Any]:
 
 
 def observables_of(fixture: WorldFixture) -> tuple[str, ...]:
+    """Measures this world can produce, not every key its observer computes.
+
+    A bridge may declare a per-schema gate; without one, every computed key is
+    advertised as before.
+    """
     bridge = _bridge_of(fixture)
     if not bridge:
         return ()
     state = bridge["load"](fixture.root)
+    gate = bridge.get("observables_for")
+    if callable(gate):
+        return tuple(sorted(gate(state)))
     return tuple(sorted(bridge["observe"](state)))
 
 
