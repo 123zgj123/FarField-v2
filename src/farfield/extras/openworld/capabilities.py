@@ -602,15 +602,18 @@ REGISTER: tuple[Capability, ...] = (
         "operators for a first-hop hypothesis.",
         ("explore.py", "citations.py", "workid.py", "openworld/workers.py"),
         ("tests/test_research_retrieval.py", "tests/test_research_citation_graph.py"),
-        status=PARTIAL, live_path=_trajectory_lane_end_to_end,
-        limits="The library is now built by bounded citation expansion rather than by "
-               "hoping one of six keyword results cites another: a live survey produced "
-               "twenty-two works, twenty-eight provenance edges and ten grounded "
-               "transitions. What is not yet demonstrated live is a hypothesis carrying "
-               "source_trajectories_used, so the status stays partial until a live "
-               "mission shows the lane consuming what it recovered.",
+        status=IMPLEMENTED, live_path=_trajectory_lane_end_to_end, validated="live",
+        limits="A live mission produced a hypothesis on this lane with no fallback: "
+               "operator basis grounded_historical_transition, one source trajectory "
+               "matched exactly on representation, its target a node reached by "
+               "citation expansion rather than by the keyword search. What is NOT "
+               "established is that a hypothesis conditioned on a historical "
+               "transition is better than one generated without it. Nothing here "
+               "measures hypothesis quality, and no claim about it rests on this lane.",
         note="Expansion reads titles, abstracts and reported references only; no full "
-             "text is fetched for an expanded node.",
+             "text is fetched for an expanded node. The lane needs an anchor built "
+             "from admitted papers, so it stays silent when retrieval finds nothing "
+             "on the subject rather than reusing history against an empty state.",
     ),
     Capability(
         "project_pivot",

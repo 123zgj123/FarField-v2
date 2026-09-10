@@ -246,6 +246,8 @@ geometry?* The numbers are from the runtime's own trajectory telemetry.
 | 12 | 37 | 63 | 4 | 4 of 4 | 0 | subject-anchored search phrase |
 | 13 | 37 | 63 | 4 | 4 of 4 | **1** | subject screen scoped to objects studied |
 
+Run 13 is the first in which a hypothesis carried `source_trajectories_used`.
+
 Each run failed at a *later* point than the one before it, which is the only
 evidence that the fixes were causal rather than incidental. Runs 9 and 10 built
 a real graph and could not read it back. Run 11 could read it back and had
@@ -254,11 +256,18 @@ and nanophotonics. Run 12 retrieved the right genus and screened all of it away.
 Run 13 admits three Iris papers, populates the anchor, and retrieves one
 grounded historical transition on an exact representation match.
 
-What is **not** established: that a hypothesis generated from that transition is
-better than one generated without it. The capability register keeps
-`trajectory_conditioned_exploration` at `partial` until a live mission produces
-a hypothesis carrying `source_trajectories_used`, and no claim about hypothesis
-quality is made anywhere on the basis of these runs.
+Run 13 then produced the hypothesis. `research_lane: trajectory_supported`,
+`requested_lane` the same and `lane_fallback` empty, so it is the lane it claims
+to be. Operator basis `grounded_historical_transition`; one source trajectory,
+matched exactly on `representation`, applicability `established`. Its target,
+`doi:10.1021/acs.jafc.2c06132`, is a node reached by citation expansion and not
+one of the five papers the keyword search returned — the expansion is what
+supplied it.
+
+What is **not** established: that a hypothesis conditioned on a historical
+transition is better than one generated without it. Nothing here measures
+hypothesis quality, no claim anywhere rests on this lane, and the register says
+so in the entry's own limits.
 
 Cost, measured: one SURVEY spends at most twelve model calls — ten paper
 extractions capped by budget, two transition annotations — plus one call to name

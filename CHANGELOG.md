@@ -71,6 +71,17 @@ programming paper **on topic**, because its abstract contained "petal" and
   already rejected cannot be argued back in, so the screen can withhold
   relevance and never invent it.
 
+### The lane fired
+
+Run 13, live, no fallback: a hypothesis on `trajectory_supported`, operator
+chosen on the basis `grounded_historical_transition`, one source trajectory
+matched exactly on `representation` — and that trajectory's target is a work
+reached by citation expansion rather than by the keyword search, which is the
+whole point of building the graph. `trajectory_conditioned_exploration` moves
+from `partial` to `implemented`, `validated: live`, with the limit stated in
+the entry: nothing here measures whether a trajectory-conditioned hypothesis is
+any better, and no claim rests on it.
+
 The resource view also billed a whole SURVEY as one `api_call` while the ledger
 that enforces the envelope counted every model call — two meters of the same
 name, an order of magnitude apart. Attempts now carry the ledger's real count.
