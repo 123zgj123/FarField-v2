@@ -629,3 +629,121 @@ question a live study would have to answer.
 
 Tests: 1459 passing, up from 1416. Capability register: nineteen implemented
 with firing probes, three partial with stated limits.
+
+---
+
+## Round 10 — the far-field lane had nothing to read
+
+Six live segments reported `trajectory_supported` as an available lane and used
+it zero times. Round 9 read that as a corpus problem: keyword retrieval rarely
+returns one paper that cites another, so the library stayed empty and the lane
+was "correctly not offered". That was true and it was not the whole cause. The
+audit that opened this round asked six questions of the real code and got six
+answers, none of them about corpus size:
+
+- transitions were sought **inside one search's six results**, pairwise;
+- the references those results carried were kept as strings and **never
+  dereferenced**;
+- the two indexes **named the same paper differently**, so an OpenAlex work
+  keyed by DOI could never match its own `referenced_works` keyed by W-id;
+- hop 2 rewrites the anchor and re-retrieves, which does nothing against an
+  empty library;
+- there is **no embedding, cosine or concept-graph** anywhere in this path, and
+  the legacy `drift.py` / `novelty.py` stack is unreachable;
+- `corpus.py` already had bounded citation expansion — as an offline corpus
+  builder, wired to nothing.
+
+### Six defects, each sufficient on its own
+
+Every one was found by running the thing, and each became visible only after the
+one above it was fixed.
+
+| defect | how it presented | what it actually was |
+|---|---|---|
+| no expansion | 0 edges, six segments | references never dereferenced |
+| namespace mismatch | 0 edges after expansion | DOI keys against W-id references |
+| forward index | 31 backward edges, 0 forward | `cites:` takes W-ids; nodes are DOIs |
+| quadratic cost | 48 calls in a 24-call run | both endpoints re-extracted per edge |
+| restore mismatch | 10 extracted → 10 blocked | registry at write, strings at read |
+| unrelated ≠ disagrees | 7 transitions, 0 retrieved | one non-match vetoed everything |
+
+Then the lane found something and could not act on it: fifteen research
+operators against a card table of four.
+
+### Retrieval was asking for the wrong thing
+
+The clearest single finding of the round. For *does petal geometry separate
+iris species better than sepal geometry?* the query issued was
+`all:"does petal" OR all:"petal geometry"` — the phrase builder takes adjacent
+word pairs in sentence order, so `"iris species"` ranked fifth and was never
+asked for. The survey returned conic programming, nanophotonics, bee electric
+fields and cut-flower senescence, and the lexical relevance guard called the
+**conic programming** paper on topic because its abstract contained "petal" and
+"geometry".
+
+Two fixes, and one over-correction found by running it again: the first version
+of the subject screen asked for "the same objects and the same phenomenon" and
+rejected a QTL study of floral traits in Iris hybrids — the right organs of the
+right genus, measured — which left the anchor empty and the lane with nothing to
+compare against. The test is now the objects studied, not the question asked
+about them.
+
+### What the live sequence shows
+
+| run | nodes | edges | transitions | restorable | retrieved | used |
+|---|---|---|---|---|---|---|
+| 1–6 | 0 | 0 | 0 | — | 0 | 0 |
+| 9 | 23 | 27 | 7 | 0/7 | 0 | 0 |
+| 10 | 22 | 28 | 10 | 0/10 | 0 | 0 |
+| 11 | 22 | 28 | 10 | 10/10 | 0 | 0 |
+| 12 | 37 | 63 | 4 | 4/4 | 0 | 0 |
+| 13 | 37 | 63 | 4 | 4/4 | 1 | **1** |
+
+Run 13 produced a hypothesis on `trajectory_supported` with `lane_fallback`
+empty, operator basis `grounded_historical_transition`, one source trajectory
+matched exactly on `representation`, and that trajectory's target reached by
+citation expansion rather than by the keyword search. Run 13's graph also
+contains 16 forward-citation edges — zero in every earlier run — and a
+three-paper lineage with the operator sequence
+`[representation_change, representation_change]`.
+
+An ablation on the same artifacts, at no cost: with the recovered transitions
+the operator is `representation_change` on basis
+`grounded_historical_transition`; with the transitions removed, retrieval
+returns nothing and the lane falls back to `assumption_reframe`. **The lane
+changes the decision.** Whether the decision it produces is better is not
+measured here, by anything, and the capability register says so in the entry's
+own limits.
+
+### Cost, measured rather than assumed
+
+One SURVEY: at most twelve model calls (ten paper extractions capped by budget,
+two transition annotations), plus one to name the search subject and one to
+screen the retrieval. Expanded citation nodes are read from title, abstract,
+year and reported references — no full text is fetched for them. Run 13's shared
+cache avoided nineteen re-reads. The extractions run concurrently, which turned
+a fifteen-minute survey into a forty-second one.
+
+The resource view had been billing a whole SURVEY as one `api_call` while the
+ledger enforcing the envelope counted every model call — two meters of the same
+name, an order of magnitude apart.
+
+### Two claims retired
+
+`SEMANTIC_NEIGHBOR` and `TEMPORAL_NEIGHBOR` were declared edge kinds that no
+code built, so the provenance/retrieval separation this module exists for had
+only one side. Bibliographic coupling and co-citation are now computed from
+reference lists already in the graph — no request, no model call — and the two
+kinds nothing computed are gone. A test builds one graph shaped to produce every
+declared kind and compares it against the vocabulary.
+
+A probe refusal told the writer of an iris-geometry claim to "count the object
+(protocol field, invariant, index) — not cut-maintenance hops". The refusal text
+reaches the writer as repair guidance, so a reason from another domain steers
+the retry wrong. It now reports the actual overlap. The condition refused is
+unchanged, and a regression pins that.
+
+Tests: 1574 passing, up from 1526. Behavioural 8/8, long-horizon 18/18.
+Capability register: twenty implemented with firing probes, two partial with
+stated limits; `trajectory_conditioned_exploration` moved from partial to
+implemented, `validated: live`.
