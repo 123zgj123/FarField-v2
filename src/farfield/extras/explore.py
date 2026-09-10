@@ -1267,10 +1267,15 @@ def extract_transition(source: Any, target: Any, client: Any = None,
     preserved = tuple(name for name in known if _research_text(getattr(source, name)).casefold() == _research_text(getattr(target, name)).casefold())
     if not changed:
         reasons.append("no_grounded_conceptual_change")
+    # A component change names the move it implies. Without a mapping the
+    # operator stays "unknown", and retrieval drops the transition entirely —
+    # so a genuine evolution whose only change was the evaluator was extracted,
+    # counted, stored, and then never usable by anything.
     default_moves = (
         ("representation", "representation_change"), ("objective", "objective_change"),
         ("mechanism", "mechanism_replacement"), ("problem", "problem_reframe"),
         ("research_question", "problem_reframe"),
+        ("evaluation_regime", "verifier_shift"),
     )
     operator = next((move for component, move in default_moves if component in changed), "unknown")
     annotations: dict[str, str] = {}
@@ -1435,9 +1440,11 @@ def retrieve_transitions(state: dict[str, Any], transitions: Any, limit: int = 6
 
     Recognized current-state keys are bottleneck_gap, assumptions,
     representation, evidence. Values may be text or lists of text. At least
-    one source condition must match; unknown current fields do not vote. Every
-    condition present on both sides must match, so a single disagreement still
-    excludes the transition.
+    one source condition must match; unknown current fields do not vote. A
+    condition that contradicts the current state excludes the transition. A
+    condition with no lexical relation to it abstains and is reported as
+    unmatched: it is not evidence for reuse, and it is not a disagreement
+    either. Transitions with fewer unmatched conditions rank first.
 
     A match is graded, and the grade travels with the result. Normalized
     equality establishes applicability. Same-polarity content-word overlap
@@ -1468,6 +1475,7 @@ def retrieve_transitions(state: dict[str, Any], transitions: Any, limit: int = 6
         exact = 0
         proposed = 0
         contradictions = 0
+        unrelated: list[str] = []
         score = 0.0
         matched_fields: dict[str, dict[str, Any]] = {}
         for name, condition in transition.applicability_conditions.items():
@@ -1483,28 +1491,46 @@ def retrieve_transitions(state: dict[str, Any], transitions: Any, limit: int = 6
                 exact += 1
             elif best["basis"] == "overlap":
                 proposed += 1
-            else:
+            elif best.get("reason") == "polarity_differs":
+                # The one dangerous false match: a near-identical sentence with
+                # the opposite sense. Refused outright.
                 contradictions += 1
+                continue
+            else:
+                # No lexical relation at all. This used to be counted as a
+                # disagreement, which excluded the transition — and since a
+                # survey anchor holds a known value for every structural field,
+                # a historical condition drawn from someone else's paper was
+                # always "disagreeing" with something. Seven grounded
+                # transitions from a real citation graph retrieved none. An
+                # unrelated condition abstains: it neither votes for the
+                # transition nor vetoes it, and it is named in the result so a
+                # caller can see what was not established.
+                unrelated.append(name)
                 continue
             score += float(best["score"])
             matched_fields[name] = best
         if not (exact + proposed) or contradictions:
             continue
-        basis = "exact" if not proposed else ("mixed" if exact else "overlap")
+        basis = ("exact" if not proposed and not unrelated
+                 else ("mixed" if exact else "overlap"))
         stamped = _replace(transition, retrieval={
             "match_basis": basis,
             "applicability": "established" if basis == "exact" else "proposed",
             "exact_conditions": exact,
             "proposed_conditions": proposed,
+            "unmatched_conditions": list(unrelated),
             "matched_fields": matched_fields,
             "score": round(score, 4),
             "note": ("overlap proposes a historical operator for consideration; "
-                     "it does not establish that the transition applies"),
+                     "it does not establish that the transition applies. "
+                     "Conditions listed as unmatched were neither confirmed nor "
+                     "contradicted by the current state."),
         })
-        ranked.append((-exact, -proposed, -round(score, 4),
+        ranked.append((len(unrelated), -exact, -proposed, -round(score, 4),
                        transition.source_cite_id, transition.target_cite_id, stamped))
-    ranked.sort(key=lambda row: row[:5])
-    return [row[5] for row in ranked[:limit]]
+    ranked.sort(key=lambda row: row[:6])
+    return [row[6] for row in ranked[:limit]]
 
 
 def copy_check(hypothesis: dict[str, Any], transitions: Any) -> tuple[str, ...]:

@@ -582,6 +582,11 @@ def transitions_from_graph(
         "edge_endpoint_lookups": 2 * len(edges),
         "extractions_avoided": max(0, 2 * len(edges) - len(cache.states)),
         "transitions_extracted": len(out),
+        # Retrieval drops a transition whose operator could not be named, so
+        # the count of extracted transitions overstates what the lane can act
+        # on. Both numbers are reported rather than the flattering one.
+        "transitions_with_named_operator": sum(
+            1 for row in out if getattr(row, "operator", "unknown") != "unknown"),
         "annotation_calls": annotated,
         "model_calls_total": cache.calls + annotated,
         "full_text_fetched_for_expanded_nodes": False,

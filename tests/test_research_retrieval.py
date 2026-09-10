@@ -127,7 +127,28 @@ class RetrievalTest(unittest.TestCase):
                                     [transition(failure={"bottleneck_gap": "streaming inputs only"})])
         self.assertEqual(len(rows), 1)
 
-    def test_one_disagreeing_condition_still_excludes_the_transition(self):
+    def test_a_contradicted_condition_still_excludes_the_transition(self):
+        """A condition the current state denies is a disagreement, and vetoes."""
+        row = transition()
+        row = type(row)(**{**row.to_dict(),
+                           "source_state": row.source_state, "target_state": row.target_state,
+                           "applicability_conditions": {
+                               "bottleneck_gap": GAP,
+                               "representation": "the index is a dense token grid"}})
+        rows = retrieve_transitions(
+            {"bottleneck_gap": GAP,
+             "representation": "the index is not a dense token grid"}, [row])
+        self.assertEqual(rows, [])
+
+    def test_an_unrelated_condition_abstains_and_is_named(self):
+        """Unrelated is not disagreement.
+
+        Counting "no lexical relation" as a disagreement made this lane
+        unreachable outside a fixture: a survey anchor holds a known value for
+        every structural field, so a condition drawn from someone else's paper
+        always disagreed with something. A real citation graph produced seven
+        grounded transitions and retrieved none of them.
+        """
         row = transition()
         row = type(row)(**{**row.to_dict(),
                            "source_state": row.source_state, "target_state": row.target_state,
@@ -135,7 +156,26 @@ class RetrievalTest(unittest.TestCase):
                                                         "representation": "dense token grid"}})
         rows = retrieve_transitions(
             {"bottleneck_gap": GAP, "representation": "a sparse retrieval index"}, [row])
-        self.assertEqual(rows, [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].retrieval["applicability"], "proposed",
+                         "one condition established and one unexamined is not "
+                         "established applicability")
+        self.assertEqual(rows[0].retrieval["unmatched_conditions"], ["representation"])
+
+    def test_a_fully_matched_transition_outranks_a_partly_unmatched_one(self):
+        clean = transition(source="clean", target="c2")
+        partial = transition(source="partial", target="p2")
+        partial = type(partial)(**{**partial.to_dict(),
+                                   "source_state": partial.source_state,
+                                   "target_state": partial.target_state,
+                                   "applicability_conditions": {
+                                       "bottleneck_gap": GAP,
+                                       "representation": "dense token grid"}})
+        rows = retrieve_transitions(
+            {"bottleneck_gap": GAP, "representation": "a sparse retrieval index"},
+            [partial, clean])
+        self.assertEqual([r.source_cite_id for r in rows], ["clean", "partial"])
+        self.assertEqual(rows[0].retrieval["applicability"], "established")
 
     def test_unknown_current_fields_do_not_vote(self):
         rows = retrieve_transitions({"bottleneck_gap": GAP, "representation": "unknown"},
@@ -173,6 +213,37 @@ class RetrievalTest(unittest.TestCase):
         rows = retrieve_transitions({"bottleneck_gap": "an entirely different bottleneck"},
                                     [forged])
         self.assertEqual(rows, [])
+
+
+class OperatorVocabularyTest(unittest.TestCase):
+    """CASE 8: an operator the system can choose must be one it can carry out.
+
+    A live run recovered a grounded transition, named its operator, and was
+    then blocked with "unknown reframe operator 'failure_driven_redesign'".
+    The research layer's vocabulary had fifteen operators and the card
+    generator's table had four, so most of what the lane could find could not
+    be acted on — the failure appeared only at the moment the lane finally
+    started working.
+    """
+
+    def test_every_research_operator_can_be_generated(self):
+        from farfield.extras.explore import RESEARCH_OPERATORS
+        from farfield.extras.reframe import OPERATORS
+
+        missing = [name for name in RESEARCH_OPERATORS if name not in OPERATORS]
+        self.assertEqual(missing, [],
+                         "a transition naming these operators is retrievable and "
+                         "then unusable")
+
+    def test_no_operator_is_registered_without_an_instruction(self):
+        """A name with nothing behind it steers generation no better than none."""
+        from farfield.extras.reframe import OPERATORS
+
+        for name, text in OPERATORS.items():
+            with self.subTest(operator=name):
+                self.assertGreater(len(text.split()), 15)
+                self.assertNotIn(name.replace("_", " "), text.casefold(),
+                                 "the instruction only restates the operator name")
 
 
 if __name__ == "__main__":

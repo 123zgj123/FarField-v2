@@ -53,6 +53,69 @@ OPERATORS: dict[str, str] = {
         " should stop working, then propose a claim about what happens at"
         " that boundary."
     ),
+    # The research layer reuses operators named by grounded historical
+    # transitions, and its vocabulary is larger than this one was. An operator
+    # this table did not know raised a KeyError, so a lineage that recovered
+    # `scaling` or `verifier_shift` from real papers was blocked at the moment
+    # it tried to act on what it had found. A contract test now pins the two
+    # vocabularies together.
+    "assumption_inversion": (
+        "Name ONE assumption this field treats as given, then propose what"
+        " follows if its opposite holds instead. Assert the inverted"
+        " assumption, not merely its absence."
+    ),
+    "problem_reframe": (
+        "Name the question the field is currently answering, then propose a"
+        " different question about the same phenomenon whose answer would"
+        " make the original one less important."
+    ),
+    "objective_change": (
+        "Name the quantity the field optimizes, then propose a different"
+        " objective over the same system, and say what the current objective"
+        " gets wrong that the new one would not."
+    ),
+    "decomposition": (
+        "Name ONE step the field treats as a single indivisible operation,"
+        " then propose a division of it into parts that can be measured or"
+        " controlled separately."
+    ),
+    "mechanism_replacement": (
+        "Name the mechanism the field credits for the effect, then propose a"
+        " different mechanism that would produce the same observations, and a"
+        " prediction on which the two disagree."
+    ),
+    "adaptive_control": (
+        "Name ONE quantity the field fixes in advance, then propose setting it"
+        " during the run from a signal the system can actually observe."
+    ),
+    "feedback_introduction": (
+        "Name ONE stage whose output the field never routes back to an earlier"
+        " stage, then propose the loop and what it would correct."
+    ),
+    "formalization": (
+        "Name ONE notion the field uses informally, then propose a definition"
+        " precise enough to be decided, and state what becomes checkable."
+    ),
+    "scaling": (
+        "Name the regime of size, duration, or resolution the field's evidence"
+        " comes from, then propose a claim about a regime far outside it, and"
+        " say what would have to break for the claim to fail."
+    ),
+    "cross_domain_transfer": (
+        "Name ONE method established in another field for a structurally"
+        " similar problem, then propose what it predicts here. State the"
+        " structural correspondence, not the surface analogy."
+    ),
+    "verifier_shift": (
+        "Name the evaluation the field accepts as settling the question, then"
+        " propose a different evaluation of the same claim, and say which"
+        " current conclusions it could overturn."
+    ),
+    "failure_driven_redesign": (
+        "Name the specific way the prior attempt failed, then propose a design"
+        " whose difference addresses that failure and no other. Do not restate"
+        " the failure as a caveat."
+    ),
 }
 
 GRAPH_SKIP_REASON = (

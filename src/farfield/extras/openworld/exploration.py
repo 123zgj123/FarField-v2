@@ -499,6 +499,9 @@ def trajectory_metrics(state: Any) -> dict[str, Any]:
             int((g.get("extraction") or {}).get("extractions_avoided") or 0)
             for g in graphs),
         "verified_transition_count": len(transitions),
+        "usable_transition_count": sum(
+            1 for t in transitions
+            if str(t.get("operator") or "unknown") != "unknown"),
         "trajectory_count": len(trajectories),
         "trajectory_path_depth": max(depths) if depths else 0,
         "trajectory_supported_eligible": bool(transitions),
