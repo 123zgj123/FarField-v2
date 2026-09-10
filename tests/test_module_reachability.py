@@ -185,3 +185,80 @@ class DerivedBeliefTest(unittest.TestCase):
         after = self.apply(self.state(), "DebtUpdated",
                            {"debt": {"contradiction_debt": 999, "quality_gap": 0}})
         self.assertEqual(dict(after.debt), before)
+
+
+class StateFieldOwnershipTest(unittest.TestCase):
+    """A field nothing writes is a projection promising something it cannot carry.
+
+    `accepted_ideas` had no writer anywhere. The notebook projection publishes
+    it as `ideas`, and `sync_from_notebook` reads those back to restore active
+    lineages on a resume — a loop that could never execute, so a resume from a
+    notebook silently dropped every lineage while appearing to restore them.
+    """
+
+    def test_every_state_field_has_a_writer(self):
+        import ast
+        from dataclasses import fields
+        from pathlib import Path
+
+        from farfield.extras.openworld.state import ScientificState
+
+        root = Path(__file__).resolve().parents[1] / "src/farfield/extras/openworld"
+        written = set()
+        for path in root.glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                # `state.x = ...`, `state.x.append(...)`, `Cls(x=...)`
+                if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+                    written.add(node.attr)
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in {"append", "extend", "update", "pop",
+                                               "remove", "setdefault", "clear"}
+                        and isinstance(node.func.value, ast.Attribute)):
+                    written.add(node.func.value.attr)
+                if isinstance(node, ast.keyword) and node.arg:
+                    written.add(node.arg)
+        missing = [f.name for f in fields(ScientificState) if f.name not in written]
+        self.assertEqual(missing, [],
+                         "these fields are declared, serialized and never written")
+
+    def test_a_notebook_round_trip_restores_active_lineages(self):
+        from farfield.extras.openworld.events import make_event
+        from farfield.extras.openworld.reducer import apply_events
+        from farfield.extras.openworld.state import (
+            ScientificState, notebook_projection, sync_from_notebook,
+        )
+
+        root = "does X improve Y in Z?"
+        state = apply_events(ScientificState(goal=root), [
+            make_event("ContractSet", {"root_question": root}),
+            make_event("QuestionCreated", {"id": "Q1", "text": root}),
+            make_event("LineageForked", {"lineages": ["line-a", "line-b"],
+                                         "theory_id": "T1"}),
+        ])
+        projection = notebook_projection(state)
+        self.assertEqual([row["lineage_id"] for row in projection["ideas"]],
+                         ["line-a", "line-b"])
+
+        class Notebook:
+            def __init__(self, row):
+                self.__dict__.update(row)
+
+        restored = sync_from_notebook(ScientificState(goal=root), Notebook(projection))
+        self.assertEqual(restored.active_lineages, ["line-a", "line-b"])
+
+
+class ExecutorCoverageTest(unittest.TestCase):
+    """An action with no executor returns `status: recorded`, which reads as success."""
+
+    def test_every_action_spec_has_an_executor(self):
+        from farfield.extras.openworld import DEFAULT_EXECUTORS, EVOLVE_HARNESS
+        from farfield.extras.openworld.actions import SPECS
+
+        for name, spec in SPECS.items():
+            with self.subTest(action=name):
+                if name == EVOLVE_HARNESS:
+                    continue  # handled by OpenWorld.evolve, not the executor table
+                self.assertTrue(
+                    name in DEFAULT_EXECUTORS or spec.executor in DEFAULT_EXECUTORS,
+                    f"{name} would fall through to a bare 'recorded' status")

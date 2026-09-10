@@ -385,7 +385,11 @@ class OpenWorld:
             if fn is None:
                 fn = DEFAULT_EXECUTORS.get(action.action_type)
             if fn is None:
-                raw: Any = {"status": "recorded", "action": action.action_type}
+                # "recorded" reads as success. An action nothing can perform
+                # should say that, so a spec added without an executor fails
+                # loudly instead of appearing to do its job.
+                raw: Any = {"status": "blocked", "action": action.action_type,
+                            "reason": "no_executor_for_this_action"}
             else:
                 raw = fn(self, action)
             if action.action_type == EVOLVE_HARNESS and not callable(

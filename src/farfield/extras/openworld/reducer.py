@@ -223,6 +223,20 @@ def reduce_event(
             text = str(lid)
             if text and text not in current.active_lineages:
                 current.active_lineages.append(text)
+                # The notebook projection carries these as `ideas`, and
+                # `sync_from_notebook` reads them back to restore the active
+                # lineages on a resume. Nothing had ever written the field, so
+                # the projection's `ideas` was permanently empty and that
+                # restore loop could not run: a resume from a notebook silently
+                # dropped every lineage.
+                current.accepted_ideas.append({
+                    "lineage_id": text,
+                    "theory_id": str(payload.get("theory_id") or ""),
+                    "question_id": str(payload.get("question_id") or ""),
+                    "forked_at_tick": int(current.ticks),
+                    "project_epoch": int(current.project_epoch),
+                    "epistemic": "GENERATED",
+                })
     elif kind == "LineageMerged":
         for lid in payload.get("retired") or []:
             text = str(lid)
