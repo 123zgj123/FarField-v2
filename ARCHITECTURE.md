@@ -338,6 +338,91 @@ guarding a condition that cannot arise reads as permanently satisfied.
 [contracts/CAPABILITIES.md](contracts/CAPABILITIES.md) is the normative
 statement. Where this file and the register disagree, the register wins.
 
+## The audited inventory
+
+Every number below is produced by a check that runs in the suite, not by
+reading. The point is not the numbers; it is that a claim about the system's
+shape now fails a test when it stops being true.
+
+### Surfaces and modules
+
+122 modules. 112 reachable from an entry point, 10 orphaned and declared.
+
+| Surface | Entry point | Modules reached |
+|---|---|---|
+| research | `openworld/runtime.py` | 89 |
+| cli | `cli.py` | 108 |
+| evaluation | `capabilities.py`, `benchmark.py`, `trajectory_eval.py`, `reachability.py` | 69 |
+
+`reachability.py` walks imports from those entry points. A module kept alive
+only by its own tests does not count as reached — that is how a 32KB campaign
+harness passed for live code. The ten orphans are the pre-openworld generation
+stack (`drift`, `novelty`, `rank`, `probe`, `portfolio`, `operators`,
+`adapters`, `benchloop`), a deliberate tombstone (`worker`), and the package
+root. Each says so in its own docstring, and each is declared with a reason;
+a module falling off the path fails as an undeclared orphan, and an orphan
+gaining an importer fails as a stale declaration.
+
+### The action vocabulary
+
+15 action specs, every one with an executor. An action type with no executor
+used to return `{"status": "recorded"}`, which reads as success; it now blocks
+with a named reason, and the coverage is a test.
+
+```text
+OBSERVE  SURVEY  THEORIZE  PROBE  VERIFY  SYNTHESIZE  REVIEW  REDESIGN
+FORK_LINEAGE  PROJECT_PIVOT  ARCHIVE  REFLECT  ACQUIRE  ASK  EVOLVE_HARNESS
+```
+
+### The event vocabulary
+
+39 declared types, 39 reducer branches, 23 emitted by production code. The
+other 16 are declared unemitted with a reason. Two properties are checked:
+nothing is emitted without a branch, and no silent branch goes undeclared.
+
+That audit is not bookkeeping. `TheorySupported` with an empty payload wrote
+`status: supported` onto a hypothesis row and it *stuck*, because the derived
+refresh only overwrites a status when admitted evidence exists. A hypothesis
+could be believed on the strength of nothing, through the single writer, inside
+the trusted kernel. Nothing emitted it; the branch accepting it was the hole.
+Belief events now record an evidence link and leave the verdict to derivation.
+
+### State ownership
+
+41 fields on `ScientificState`. The reducer is the only writer. Every field is
+written by something — `accepted_ideas` was not, which made the notebook
+projection's `ideas` permanently empty and the lineage-restore loop that reads
+it unreachable, so a resume from a notebook silently dropped every lineage
+while appearing to restore them.
+
+Derived projections (`quality`, `resources`, `objective`, `debt`, `frontier`,
+`graph`) are recomputed after every batch, in that order, with the project
+views last — they read what the earlier recomputations rebuild, and refreshing
+them first erased `goal_drift_debt`.
+
+### The log is the authority
+
+`state_digest(state) == state_digest(rebuild_state(log))` holds within a code
+version. It does not hold across one: a snapshot saved by different derivation
+code will not match a replay of its own log. On load, that disagreement is
+detected and resolved by rebuilding from the log, because the log is the only
+writer. The record of the divergence lives on the environment, not in the
+state — putting it in the state changes the rebuilt state's digest and breaks
+the equality being protected.
+
+### Where a model can speak
+
+27 model call sites across the repository; the research path reaches eleven
+modules that contain them. A model proposes hypotheses, interprets papers,
+writes experiment sources, names an operator, screens retrieval for subject,
+and drafts prose. It cannot mint an observation: evidence reaches canonical
+state only through the admission boundary, which downgrades anything of
+generated provenance, requires a matching attested freeze digest for `WORLD`,
+and refuses social signals as promotion conditions. That boundary applies
+identically whether a worker returns evidence as `candidate.evidence` or as an
+`EvidenceAdded` event, which is now a regression test rather than a property to
+re-derive by reading the function.
+
 ## Operational boundaries
 
 - Sessions have a finite horizon and service budget. Python callers can resume
