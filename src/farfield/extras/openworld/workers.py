@@ -294,13 +294,12 @@ class LegacyResearchWorkers:
                 extraction = ExtractionBudget(
                     **dict(action.extra.get("extraction_budget") or {}))
                 cache = PaperStateCache(graph.registry, limit=extraction.papers)
-                papers = []
-                for work in works[:6]:
-                    state_of = cache.get(cache.key(work.cite_id()),
-                                         documents.get(work.cite_id(), work),
-                                         client=self.client)
-                    if state_of is not None:
-                        papers.append(state_of)
+                seeds = [(cache.key(work.cite_id()),
+                          documents.get(work.cite_id(), work)) for work in works[:6]]
+                cache.prefetch(seeds, client=self.client)
+                papers = [state_of for state_of in
+                          (cache.states.get(key) for key, _ in seeds)
+                          if state_of is not None]
                 extracted, transition_gaps = transitions_from_graph(
                     graph, client=self.client, budget=extraction, cache=cache)
                 gaps.extend(transition_gaps)

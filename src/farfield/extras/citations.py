@@ -374,6 +374,8 @@ class PaperStateCache:
     """
 
     def __init__(self, registry: Any = None, *, limit: int = 10) -> None:
+        import threading
+
         self.registry = registry
         self.limit = max(0, int(limit))
         self.states: dict[str, Any] = {}
@@ -381,6 +383,7 @@ class PaperStateCache:
         self.hits = 0
         self.exhausted = 0
         self.failures: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def key(self, value: Any) -> str:
         """Canonical id for a work, an id string, or an extracted state."""
@@ -404,28 +407,69 @@ class PaperStateCache:
         if charged:
             self.calls += 1
 
-    def get(self, key: str, row: Any, *, client: Any = None) -> Any:
+    def _extract(self, key: str, row: Any, use: Any) -> Any:
         from .explore import extract_paper_state
         from .llm import LLMUnavailable
 
-        if key in self.states:
-            self.hits += 1
-            return self.states[key]
-        use = client
-        if client is not None and self.calls >= self.limit:
-            use, self.exhausted = None, self.exhausted + 1
+        charged = use is not None
         try:
             state = extract_paper_state(row, client=use)
-            if use is not None:
-                self.calls += 1
         except (LLMUnavailable, ValueError, KeyError, TypeError) as exc:
-            self.failures.append({"work": key, "reason": f"paper_extraction_failed:{exc}"})
+            with self._lock:
+                self.failures.append({"work": key,
+                                      "reason": f"paper_extraction_failed:{exc}"})
             try:
                 state = extract_paper_state(row)
             except (ValueError, KeyError, TypeError):
                 return None
-        self.states[key] = state
-        return state
+            charged = False
+        with self._lock:
+            if key not in self.states:
+                self.states[key] = state
+                if charged:
+                    self.calls += 1
+            return self.states[key]
+
+    def get(self, key: str, row: Any, *, client: Any = None) -> Any:
+        with self._lock:
+            if key in self.states:
+                self.hits += 1
+                return self.states[key]
+            use = client
+            if client is not None and self.calls >= self.limit:
+                use, self.exhausted = None, self.exhausted + 1
+        return self._extract(key, row, use)
+
+    def prefetch(self, items: Iterable[tuple[str, Any]], *, client: Any = None,
+                 workers: int = 4) -> None:
+        """Extract several works at once.
+
+        One paper's extraction does not depend on another's, and a live call
+        can take over a minute, so a survey reading ten papers in sequence
+        spends a quarter of an hour on work that has no ordering. The client
+        reserves a ledger slot before it hits the wire and detects a duplicate
+        recording afterwards, so concurrent calls neither overspend the
+        envelope nor charge twice. Budget is allocated before dispatch rather
+        than checked inside each worker, so the cap cannot be raced past.
+        """
+        pending = [(key, row) for key, row in items
+                   if key and key not in self.states]
+        if not pending:
+            return
+        with self._lock:
+            allowed = max(0, self.limit - self.calls) if client is not None else 0
+            if client is not None:
+                self.exhausted += max(0, len(pending) - allowed)
+        plan = [(key, row, client if index < allowed else None)
+                for index, (key, row) in enumerate(pending)]
+        if allowed < 2 or workers < 2:
+            for key, row, use in plan:
+                self._extract(key, row, use)
+            return
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(int(workers), len(plan))) as pool:
+            list(pool.map(lambda job: self._extract(*job), plan))
 
     def spend(self) -> dict[str, Any]:
         return {"paper_extraction_calls": self.calls,
@@ -474,8 +518,9 @@ def transitions_from_graph(
     for edge in edges:
         for node in (edge.source, edge.target):
             demand[node] = demand.get(node, 0) + 1
-    for node in sorted(demand, key=lambda name: (-demand[name], name)):
-        cache.get(node, graph.rows[node], client=client)
+    cache.prefetch([(node, graph.rows[node])
+                    for node in sorted(demand, key=lambda name: (-demand[name], name))],
+                   client=client)
 
     gaps: list[dict[str, Any]] = list(cache.failures)
     structural: list[tuple[Any, CitationEdge]] = []

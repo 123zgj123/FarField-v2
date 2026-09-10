@@ -429,3 +429,66 @@ class ForwardExpansionTest(unittest.TestCase):
         telemetry = graph.telemetry
         self.assertEqual(telemetry["citation_nodes_requested"], 1)
         self.assertEqual(telemetry["citation_nodes_fetched"], 0)
+
+
+class ConcurrentExtractionTest(unittest.TestCase):
+    """CASE 7: independent reads should not be serialised, and must not race.
+
+    A live extraction can take over a minute. Ten papers read in sequence cost
+    a quarter of an hour of wall clock on work that has no ordering at all.
+    Running them together is only safe if the budget cannot be raced past, so
+    the allocation happens before dispatch rather than inside each worker.
+    """
+
+    class SlowClient:
+        def __init__(self, delay=0.02):
+            import threading
+
+            self.delay = delay
+            self.calls = 0
+            self.concurrent = 0
+            self.peak = 0
+            self._lock = threading.Lock()
+
+        def complete(self, prompt, *, purpose="", system=None, **kwargs):
+            import time
+
+            with self._lock:
+                self.calls += 1
+                self.concurrent += 1
+                self.peak = max(self.peak, self.concurrent)
+            time.sleep(self.delay)
+            with self._lock:
+                self.concurrent -= 1
+            return type("C", (), {"text": "{}"})()
+
+    def rows(self, count):
+        return [(f"doi:10.1/p{index}",
+                 {"title": f"paper {index}", "work_id": f"doi:10.1/p{index}",
+                  "published": "2020", "abstract": "an abstract", "references": []})
+                for index in range(count)]
+
+    def test_the_budget_cannot_be_raced_past(self):
+        client = self.SlowClient()
+        cache = PaperStateCache(limit=3)
+        cache.prefetch(self.rows(8), client=client, workers=8)
+        self.assertEqual(client.calls, 3, "three slots, eight papers, three calls")
+        self.assertEqual(cache.calls, 3)
+        self.assertEqual(cache.exhausted, 5)
+        self.assertEqual(len(cache.states), 8,
+                         "the five over budget are still extracted, without a client")
+
+    def test_independent_extractions_overlap(self):
+        client = self.SlowClient()
+        cache = PaperStateCache(limit=6)
+        cache.prefetch(self.rows(6), client=client, workers=4)
+        self.assertEqual(client.calls, 6)
+        self.assertGreater(client.peak, 1, "six independent reads ran one at a time")
+
+    def test_a_cached_work_is_never_re_extracted_by_a_prefetch(self):
+        client = self.SlowClient()
+        cache = PaperStateCache(limit=6)
+        rows = self.rows(4)
+        cache.get(*rows[0], client=client)
+        cache.prefetch(rows, client=client, workers=4)
+        self.assertEqual(client.calls, 4)
