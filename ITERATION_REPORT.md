@@ -498,3 +498,134 @@ probe that fails when that stops being true. Matching claims to reality is a
 precondition for being good at research, not evidence of it. The two gaps most
 likely to matter — a task-defined score, and multistart that actually branches —
 are named above and remain unbuilt.
+
+---
+
+## Round 9 — giving RSI a gradient
+
+The question this round answers is *how does each far-field exploration get
+better than the last*. The answer found by tracing the live runs was: it does
+not, and could not, because three separate links were severed.
+
+### What the live runs actually showed about far-field exploration
+
+Both live segments that produced a hypothesis recorded:
+
+```
+lane                     assumption_reframe
+trajectory_applicability none
+source_trajectories_used []
+operator                 assumption_removal
+```
+
+`assumption_removal` was not chosen. It was the hard-coded fallback taken
+whenever no grounded trajectory was retrieved, which was every time. The
+hypotheses themselves were well-formed — falsifiable, with a quantitative
+bootstrap criterion, a named competing explanation, an explicit claim delta —
+but the mechanism the system is named after contributed nothing, and two
+consecutive runs produced near-identical hypotheses because no mechanism existed
+by which the second could differ.
+
+The novelty grounding was worse than absent. `closest_prior_work` cited verified
+retrieved papers, and the retrieved papers for *does petal geometry separate
+iris species better than sepal geometry?* were: linear conic programming,
+exoplanet apodization, petal wax layers, Petunia transcription factors,
+cut-flower ethylene. None was about morphometric discrimination. The prior check
+passed because nothing retrieved stated the claim — which is not novelty. And
+the generated hypothesis defended itself against the flower-reconstruction
+paper, so an irrelevant retrieval had reached into the framing of the science.
+
+### Four modules, each fixed and verified on its own
+
+**A task objective** (`objective.py`). A contract may declare what better means
+for its root question: a metric name, which registered field of admitted
+evidence carries it, a direction, and a minimum improvement. The project then
+has a frontier and a notion of beating it. Only admitted WORLD evidence scores,
+and the metric may only read a registered field — otherwise the scorer and the
+thing scored share an author. A breakthrough here is a measurement, not a
+discovery. Without this, "better" had no definition and nothing downstream could
+have one.
+
+**Attribution** (`exploration.py`). Every admitted result traces through its
+hypothesis to the lane and operator that produced it. A policy over exploration
+without this is fitting noise.
+
+**A real choice** (`exploration.py`). The transformation is selected from what
+the situation admits, what this project has measured, and what has not been
+asked of this question. Applicability is a declared table over the operator
+vocabulary; a weakened hypothesis calls for a different representation or
+mechanism, a blocked design for a redesign, a comparison that did not separate
+for a question about the objective or the verifier.
+
+The first version of the ranking put the situation strictly first, which made a
+hand-written table unbeatable by measurement — an operator this project had seen
+settle things could never overcome a static prior. The ranking is additive:
+applicability remains a hard filter, and within it measured yield outranks an
+admitted policy, which outranks the table.
+
+**Retrieval relevance** (`exploration.py`). A retrieved paper frames the research
+state only if it bears on the root question, using the same lexical anchor guard
+as goal drift and carrying the same stated limit. Off-topic papers are recorded,
+not silently dropped: that a search returned nothing on topic is a finding about
+the question's literature, and hiding it would turn an empty result into a
+confident one. `closest_prior_work` is restricted to papers that bear on the
+question.
+
+### The link that mattered most
+
+With all four built, the loop still had no gradient. Tracing it end to end:
+
+```
+mission cards carry the operator      ✓ runtime.py already did this
+report counts per-operator outcomes   ✓ routing.operator_report
+candidate weights per operator        ✓ routing.propose_policy
+next session's operator selection     ✗ severed
+```
+
+Two failures at the reward, both the same shape as defects found in earlier
+rounds — a signal that is structurally always zero:
+
+1. `_card_credit` paid for `promoted` or `host_ok is True`. Promotion requires
+   the whole ladder including heldout replication and is almost never reached.
+   `host_ok` is written **only by `mission.py`** — the legacy pipeline's
+   vocabulary. The production controller writes `reproduction_ok` and
+   `identity_ok` instead. So every card the OpenWorld path produced earned zero,
+   every operator drew the same smoothed weight, and there was no gradient.
+2. The reward paid only for `verdict == supports`. **That is a
+   confirmation-seeking incentive**: an operator that reliably produces decisive
+   negative results earned nothing. Ruling something out is research.
+
+The reward now reads the production vocabulary and pays for results that
+*settled* something — reproduced, identity-checked, admitted, either direction —
+and refuses inconclusive, unreproduced, or kernel-refused results. The heldout
+receipt gate in `maybe_update` is untouched: this changes the signal, not the
+admission.
+
+End to end, with five settled results from one operator and five inconclusive
+from another:
+
+```
+weights            decomposition 0.857   assumption_removal 0.143
+without a policy   -> assumption_removal   (situationally apt)
+with the policy    -> decomposition        (admitted policy weight)
+```
+
+### What the assembled system does and does not show
+
+| | operators tried | frontier | breakthroughs | decision-relevant evidence |
+|---|---|---|---|---|
+| A old, hard-coded operator | `assumption_removal` | 1.0 | 1 | 6 |
+| B situation-selected | `assumption_removal`, `unconstrained_exploration` | 1.0 | 1 | 6 |
+| C plus an admitted policy | **`decomposition`**, `unconstrained_exploration` | 1.0 | 1 | 6 |
+
+The behaviour changed in the intended direction: the move is now chosen, and an
+admitted policy reaches the choice. **The outcome columns are identical, and
+that is not evidence of improvement.** The scripted world's results do not
+depend on which operator produced the hypothesis, so this evaluation cannot show
+that better exploration yields better science — and making the simulation depend
+on the operator would only measure an assumption written into it. What is shown
+is that the gradient exists; whether following it improves research is the
+question a live study would have to answer.
+
+Tests: 1459 passing, up from 1416. Capability register: nineteen implemented
+with firing probes, three partial with stated limits.

@@ -294,6 +294,120 @@ def _strategic_stagnation_fires() -> bool:
     return maybe_strategic_stagnation(state) is not None
 
 
+def _task_objective_scores() -> bool:
+    """A declared task metric gives the project a frontier and a breakthrough."""
+    from .events import make_event
+    from .reducer import apply_events
+
+    state = _state(success_metric={"name": "sep", "source": "separation",
+                                   "direction": "higher_is_better",
+                                   "min_improvement": 0.05})
+    for eid, value in (("E1", 0.30), ("E2", 0.31), ("E3", 0.80)):
+        state = apply_events(state, [make_event("EvidenceAdded",
+                                                _probe_row(eid, separation=value))])
+    row = state.objective
+    # E2 improved by less than epsilon and must not count.
+    return row["frontier"] == 0.80 and row["breakthrough_count"] == 2
+
+
+def _exploration_is_attributed() -> bool:
+    """An admitted result traces back to the move that produced it."""
+    from .events import make_event
+    from .exploration import exploration_credit
+    from .reducer import apply_events
+
+    state = apply_events(_state(success_metric={"name": "s", "source": "separation",
+                                                "direction": "higher_is_better"}), [
+        make_event("TheoryCreated", {"id": "T1", "question_id": "Q1", "text": "m",
+                                     "research_lane": "assumption_reframe",
+                                     "operator_reused": "assumption_removal"}),
+        make_event("EvidenceAdded", _probe_row("E1", separation=0.4)),
+    ])
+    moves = {(row["lane"], row["operator"]): row
+             for row in exploration_credit(state)["moves"]}
+    row = moves.get(("assumption_reframe", "assumption_removal")) or {}
+    return row.get("decision_relevant") == 1 and row.get("breakthroughs") == 1
+
+
+def _operator_is_chosen_not_defaulted() -> bool:
+    """The situation decides, an installed policy reaches the choice, and the
+    same question is not asked the same way twice."""
+    from .events import make_event
+    from .exploration import applicable_operators, select_operator
+    from .reducer import apply_events
+
+    weakened = apply_events(_state(), [
+        make_event("TheoryCreated", {"id": "T1", "question_id": "Q1", "text": "m"}),
+        make_event("EvidenceAdded", _probe_row("E1", outcome="weakens")),
+    ])
+    situational = select_operator(weakened, lane="assumption_reframe",
+                                  question_id="Q1", parent={"id": "T1"})
+    plain = _state()
+    first = select_operator(plain, lane="assumption_reframe", question_id="Q1")
+    other = next(n for n in applicable_operators(plain) if n != first["operator"])
+    weighted = select_operator(plain, lane="assumption_reframe", question_id="Q1",
+                               policy={"weights": {other: 10.0}})
+    repeated = apply_events(plain, [make_event("TheoryCreated", {
+        "id": "T1", "question_id": "Q1", "text": "m",
+        "research_lane": "assumption_reframe", "operator_reused": first["operator"]})])
+    second = select_operator(repeated, lane="assumption_reframe", question_id="Q1")
+    return (situational["operator"] == "representation_change"
+            and weighted["operator"] == other
+            and second["operator"] != first["operator"])
+
+
+def _retrieval_relevance_gates_the_anchor() -> bool:
+    """Papers that merely share a word do not frame the research state."""
+    from .exploration import relevance_report
+
+    root = "does petal geometry separate iris species better than sepal geometry?"
+    report = relevance_report(root, [
+        {"cite_id": "off", "title": "Afterimage Slow Regions in First-Order Methods "
+                                    "for Linear Conic Programming", "abstract": ""},
+        {"cite_id": "on", "title": "Discriminant analysis of iris species using petal "
+                                   "and sepal geometry", "abstract": "separating iris "
+                                   "species by petal and sepal measurements"},
+    ])
+    empty = relevance_report(root, [{"cite_id": "off", "title": "conic programming"}])
+    return (report["usable"] == ["on"] and "off" in report["off_topic"]
+            and empty["gap"] == "no_retrieved_paper_is_on_topic")
+
+
+def _routing_gradient_exists() -> bool:
+    """Results from finished missions change which transformation is tried next.
+
+    The whole loop: a mission's cards carry the operator that produced them, the
+    report counts what settled, the candidate policy weighs operators by that,
+    and the next session's operator selection reads the weight. Any one link
+    missing makes the other three decorative — and for the production
+    controller the reward link was missing entirely, because it read a field
+    only the legacy pipeline writes.
+    """
+    from ..routing import propose_policy
+    from .exploration import select_operator
+
+    def card(operator: str, verdict: str, reproduced: bool = True) -> dict[str, Any]:
+        return {"ledger": "scientific", "operator": operator, "verdict": verdict,
+                "outcome": verdict, "evidence_id": f"E-{operator}-{verdict}",
+                "epistemic": "WORLD", "attested": True, "promotion_ok": True,
+                "execution_status": "ran", "probe_kind": "WORLD",
+                "reproduction_ok": reproduced, "identity_ok": reproduced,
+                "world_digest": "d", "experiment_digest": "x", "claim_consistent": True}
+
+    missions = [{"mission_id": "m1", "status": "completed", "cards": [
+        *[card("decomposition", "supports") for _ in range(3)],
+        *[card("decomposition", "weakens") for _ in range(2)],
+        *[card("assumption_removal", "uninformative") for _ in range(5)]]}]
+    policy = propose_policy(missions)
+    weights = policy.get("weights") or {}
+    state = _state()
+    plain = select_operator(state, lane="assumption_reframe", question_id="Q1")
+    learned = select_operator(state, lane="assumption_reframe", question_id="Q1",
+                              policy=policy)
+    return (weights.get("decomposition", 0) > weights.get("assumption_removal", 1)
+            and plain["operator"] != learned["operator"])
+
+
 REGISTER: tuple[Capability, ...] = (
     Capability(
         "evidence_admission",
@@ -399,6 +513,51 @@ REGISTER: tuple[Capability, ...] = (
         live_path=_strategic_stagnation_fires,
     ),
     Capability(
+        "task_objective",
+        "A contract may declare what better means for its root question, and the "
+        "project can then say which admitted result is its best and which beat "
+        "everything before it.",
+        ("openworld/objective.py", "openworld/contract.py"),
+        ("tests/test_research_exploration.py",),
+        live_path=_task_objective_scores,
+        limits="The metric reads a registered field of admitted WORLD evidence. It is "
+               "not a power calculation and a breakthrough is a measurement, not a "
+               "discovery. An undeclared metric reports that it is undeclared.",
+    ),
+    Capability(
+        "exploration_credit",
+        "Every admitted result is attributed to the lane and operator that produced "
+        "it, so a policy over exploration has something to fit.",
+        ("openworld/exploration.py",),
+        ("tests/test_research_exploration.py",),
+        live_path=_exploration_is_attributed,
+        limits="Bookkeeping over one project's small sample, not a learned prior over "
+               "which scientific transformations work.",
+    ),
+    Capability(
+        "operator_selection",
+        "The transformation attempted is selected from what the situation admits, "
+        "what this project's credit prefers and what has not been tried, rather "
+        "than taken from a constant.",
+        ("openworld/exploration.py", "openworld/workers.py"),
+        ("tests/test_research_exploration.py",),
+        live_path=_operator_is_chosen_not_defaulted,
+        limits="Applicability is a declared table over the operator vocabulary, not an "
+               "inference about what would work. Two live runs before this used the "
+               "hard-coded fallback every time.",
+    ),
+    Capability(
+        "retrieval_relevance",
+        "A retrieved paper frames the research state only if it bears on the root "
+        "question; papers that merely share a word are recorded, not used to anchor.",
+        ("openworld/exploration.py", "openworld/workers.py"),
+        ("tests/test_research_exploration.py",),
+        live_path=_retrieval_relevance_gates_the_anchor,
+        limits="The same lexical anchor guard used for goal drift, with the same limit: "
+               "it cannot tell that two phrasings share a subject. A survey with nothing "
+               "on topic reports a gap instead of anchoring to the nearest words.",
+    ),
+    Capability(
         "trajectory_conditioned_exploration",
         "Historical scientific transitions, grounded in citation lineage, propose "
         "operators for a first-hop hypothesis.",
@@ -429,6 +588,18 @@ REGISTER: tuple[Capability, ...] = (
         status=PARTIAL, live_path=None,
         limits="Implemented and offline-tested. No live segment has completed a transfer; "
                "the replication path was reached but not finished within budget.",
+    ),
+    Capability(
+        "routing_gradient",
+        "Results from finished missions change which transformation the next "
+        "session tries, so exploration can improve rather than repeat.",
+        ("routing.py", "openworld/exploration.py"),
+        ("tests/regressions/test_routing_gradient.py",),
+        live_path=_routing_gradient_exists,
+        limits="The reward pays for results that settled something — reproduced, "
+               "identity-checked, admitted, either direction — not for agreement. "
+               "Installing the weights still requires the heldout receipt in "
+               "routing.maybe_update; this capability is the signal, not the gate.",
     ),
     Capability(
         "harness_self_improvement",

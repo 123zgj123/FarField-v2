@@ -17,6 +17,7 @@ from .quality import (
     normalize_review,
     resolution_admissible,
 )
+from .objective import objective_state
 from .resources import compute_resources
 from .state import ScientificState, refresh_research_views
 
@@ -420,6 +421,7 @@ def refresh_project_views(state: ScientificState) -> None:
     """
     state.quality = compute_quality(state)
     state.resources = compute_resources(state)
+    state.objective = objective_state(state)
     contract = contract_from_state(state)
     if contract.is_set:
         questions = (

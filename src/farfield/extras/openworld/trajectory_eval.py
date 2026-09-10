@@ -28,6 +28,7 @@ from . import OpenWorld
 from .actions import PROBE, PROJECT_PIVOT, REDESIGN, REVIEW, SURVEY, THEORIZE, VERIFY
 from .events import make_event
 from .kernel import CandidateResult
+from .exploration import exploration_credit
 from .quality import open_reviews
 from .reducer import rebuild_state, state_digest
 from .termination import readiness
@@ -48,6 +49,8 @@ class ScriptedWorld:
 
     probe_script: list[dict[str, Any]] = field(default_factory=list)
     survey_works: int = 3
+    fixed_operator: bool = False
+    policy: dict[str, Any] | None = None
     world_id: str = "w0-primary"
     world_digest: str = "d0"
     heldout_id: str = "w1-heldout"
@@ -76,9 +79,23 @@ class ScriptedWorld:
             frontier_target_id=action.frontier_target_id)], extras=artifact)
 
     def theorize(self, action, state, **kwargs):
+        from .exploration import select_operator
+        from .state import ScientificState
+
         self._theories += 1
         qid = str(action.target or "")
         tid = f"T{self._theories}"
+        lane = str(action.extra.get("research_lane") or "assumption_reframe")
+        parent = next((t for t in state.get("theories", [])
+                       if t.get("id") == action.extra.get("parent_theory_id")), None)
+        if self.fixed_operator:
+            # The behaviour before operator selection existed: whatever the
+            # absence of a grounded trajectory left behind, every time.
+            selection = {"operator": "assumption_removal", "basis": "hard_coded_fallback"}
+        else:
+            selection = select_operator(
+                ScientificState.from_dict(dict(state)), lane=lane,
+                question_id=qid, parent=parent, policy=self.policy)
         claim = f"retrieval augmentation improves factual accuracy ({self._theories})"
         theory = {
             "id": tid, "question_id": qid,
@@ -87,7 +104,9 @@ class ScriptedWorld:
             "claim": claim,
             "epistemic": "GENERATED", "lineage_id": f"line-{qid}",
             "assumptions": ["retrieval quality is held constant"],
-            "research_lane": str(action.extra.get("research_lane") or "assumption_reframe"),
+            "research_lane": lane,
+            "operator_reused": selection["operator"],
+            "operator_selection": selection,
             "hop": int(action.extra.get("hop") or 1),
             "parent_theory_id": str(action.extra.get("parent_theory_id") or ""),
             # The executable handle a PROBE needs. In a live run this is a
@@ -128,6 +147,8 @@ class ScriptedWorld:
             "measured_cost": {"tokens": 2000.0, "wall_seconds": 4.0},
             **row,
         }
+        evidence.setdefault("separation", round(abs(
+            float(evidence.get("treatment") or 0) - float(evidence.get("control") or 0)), 6))
         return CandidateResult(status="probe_positive", evidence=evidence,
                                evidence_id=evidence["evidence_id"], world_id=self.world_id,
                                extras={"executor_status": "ran"})
@@ -237,6 +258,17 @@ def capability_metrics(env: OpenWorld, actions: list[str],
             / max(1, len({str(r.get("theory_id") or "") for r in world_rows if r.get("theory_id")})),
             4),
         "branch_retirement_precision": len(state.retired_lineages),
+        # Did exploration vary at all, and did the project's own objective move?
+        "operators_tried": sorted({str(t.get("operator_reused") or "") for t in state.theories
+                                   if t.get("role") != "competing_explanation"
+                                   and t.get("operator_reused")}),
+        "operator_diversity": len({str(t.get("operator_reused") or "") for t in state.theories
+                                   if t.get("role") != "competing_explanation"
+                                   and t.get("operator_reused")}),
+        "objective_frontier": (state.objective or {}).get("frontier"),
+        "breakthroughs": int((state.objective or {}).get("breakthrough_count") or 0),
+        "attributed_hypotheses": int(
+            exploration_credit(state)["attributed_hypotheses"]),
         "strategic_stagnation_recovery": int(state.metrics.get("successful_reorientation") or 0),
     }
 
@@ -248,6 +280,8 @@ def run_trajectory(
     probe_script: list[dict[str, Any]],
     horizon: int = 30,
     contract: dict[str, Any] | None = None,
+    fixed_operator: bool = False,
+    policy: dict[str, Any] | None = None,
 ) -> TrajectoryResult:
     """Run the real controller against a scripted world for a long horizon."""
     from ..freeze import freeze_world
@@ -269,6 +303,7 @@ def run_trajectory(
                    worlds=[(primary, "world"), (heldout, "heldout")])
     seed_question(env, "Q1", root_question)
     env.connect_workers(ScriptedWorld(probe_script=list(probe_script),
+                                      fixed_operator=fixed_operator, policy=policy,
                                       world_id=primary.id, world_digest=primary.digest,
                                       heldout_id=heldout.id, heldout_digest=heldout.digest))
 

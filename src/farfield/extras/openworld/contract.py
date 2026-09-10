@@ -95,6 +95,10 @@ class ResearchContract:
     forbidden_scope_changes: tuple[str, ...] = ()
     required_outputs: tuple[str, ...] = ()
     resource_limits: dict[str, float] = field(default_factory=dict)
+    # What "better" means for this project, declared before any result exists.
+    # Without it the project can judge single experiments and cannot say which
+    # of its results is its best — see objective.py.
+    success_metric: dict[str, Any] = field(default_factory=dict)
     quality_requirements: dict[str, str] = field(default_factory=dict)
     termination_requirements: tuple[str, ...] = ()
     # How far an instrumental sub-question may sit from the root before the
@@ -116,6 +120,7 @@ class ResearchContract:
             "forbidden_scope_changes": list(self.forbidden_scope_changes),
             "required_outputs": list(self.required_outputs),
             "resource_limits": dict(self.resource_limits),
+            "success_metric": dict(self.success_metric),
             "quality_requirements": dict(self.quality_requirements),
             "termination_requirements": list(self.termination_requirements),
             "max_instrumental_depth": int(self.max_instrumental_depth),
@@ -156,6 +161,7 @@ class ResearchContract:
             quality_requirements={
                 str(k): str(v) for k, v in dict(row.get("quality_requirements") or {}).items()
             },
+            success_metric=dict(row.get("success_metric") or {}),
             termination_requirements=texts("termination_requirements"),
             max_instrumental_depth=max(0, int(row.get("max_instrumental_depth") or 2)),
             min_anchor_overlap=max(1, int(row.get("min_anchor_overlap") or 2)),

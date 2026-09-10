@@ -105,6 +105,7 @@ def operator_report(missions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
                     "briefed": 0,
                     "supported": 0,
                     "promoted": 0,
+                    "decisive": 0,
                     "world_supported": 0,
                 },
             )
@@ -113,6 +114,7 @@ def operator_report(missions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
             row["briefed"] += 1 if card.get("briefed") else 0
             row["supported"] += 1 if card.get("verdict") == "supports" else 0
             row["promoted"] += 1 if card.get("promoted") in PROMOTED else 0
+            row["decisive"] += 1 if decisive_world_result(card) else 0
             kind = str(card.get("probe_kind") or "").upper()
             if card.get("promoted") in PROMOTED and kind in WORLD_KINDS:
                 row["world_supported"] += 1
@@ -122,25 +124,68 @@ def operator_report(missions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         row["promotion_rate"] = (
             row["promoted"] / row["cards"] if row["cards"] else 0.0
         )
+        row["decisive_rate"] = (
+            row["decisive"] / row["cards"] if row["cards"] else 0.0
+        )
     return report
 
 
 def propose_policy(missions: list[dict[str, Any]]) -> dict[str, Any]:
-    """Deterministic candidate: Laplace-smoothed promotion rate per operator."""
+    """Deterministic candidate: Laplace-smoothed settled-result rate per operator.
+
+    Promotion alone cannot fit anything: it requires the whole ladder including
+    heldout replication, so on the production path it is almost always zero for
+    every operator and every weight comes out equal. Counting results that
+    settled something — reproduced, identity-checked, admitted, and not
+    inconclusive — is a signal that can actually differentiate, without paying
+    for agreement.
+    """
     report = operator_report(missions)
     weights = {
-        op: (row["promoted"] + row.get("world_supported", 0) + SMOOTHING)
+        op: (row["promoted"] + row.get("world_supported", 0) + row.get("decisive", 0)
+             + SMOOTHING)
         / (row["cards"] + 2 * SMOOTHING)
         for op, row in sorted(report.items())
     }
-    return {"weights": weights, "fitted_on": len(missions)}
+    return {"weights": weights, "fitted_on": len(missions),
+            "signal": "settled_results_per_card_not_agreement"}
+
+
+def decisive_world_result(card: Mapping[str, Any]) -> bool:
+    """Did this card settle something, on a world, in a way that held up?
+
+    The production controller does not write ``host_ok``; that field is the
+    legacy pipeline's vocabulary. What it writes instead is stricter — the
+    registered protocol was re-executed against the bound bytes and the
+    identities matched — under the names ``reproduction_ok`` and
+    ``identity_ok``. Reading only the legacy field made this reward zero for
+    every card the production path produced, so every operator drew the same
+    smoothed weight and routing had no gradient at all.
+
+    "Decisive" deliberately includes a result that weakened its hypothesis. An
+    experiment that rules something out has done research; rewarding only
+    ``supports`` would make the routing signal a confirmation-seeking one, and
+    would train exploration toward operators that agree rather than operators
+    that settle.
+    """
+    if str(card.get("epistemic") or "") != "WORLD" or not card.get("attested"):
+        return False
+    if not card.get("promotion_ok") or card.get("cannot_corroborate"):
+        return False
+    if str(card.get("execution_status") or "") != "ran":
+        return False
+    if not (card.get("reproduction_ok") and card.get("identity_ok")):
+        return False
+    return str(card.get("verdict") or card.get("outcome") or "") in {
+        "supports", "weakens", "negative"}
 
 
 def _card_credit(card: dict[str, Any]) -> float:
-    """Routing reward: host-confirmed WORLD promotions. Never Elo.
+    """Routing reward: results that actually settled something. Never Elo.
 
-    Probe-only WORLD supports are pending confirmation and do not steer
-    search. Infrastructure failures have ledger=diagnostic and earn zero.
+    An unreproduced probe, an inconclusive comparison, or anything the kernel
+    refused earns nothing. Infrastructure failures have ledger=diagnostic and
+    earn zero.
     """
     if str(card.get("ledger") or "") == "diagnostic":
         return 0.0
@@ -152,6 +197,8 @@ def _card_credit(card: dict[str, Any]) -> float:
         and kind in WORLD_KINDS
         and card.get("host_ok") is True
     ):
+        return 1.0
+    if kind in WORLD_KINDS and decisive_world_result(card):
         return 1.0
     return 0.0
 

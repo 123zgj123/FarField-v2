@@ -249,6 +249,7 @@ class ScientificState:
     reviews: list[dict[str, Any]] = field(default_factory=list)
     quality: dict[str, Any] = field(default_factory=dict)
     resources: dict[str, Any] = field(default_factory=dict)
+    objective: dict[str, Any] = field(default_factory=dict)
     design_revisions: list[dict[str, Any]] = field(default_factory=list)
     retired_lineages: list[dict[str, Any]] = field(default_factory=list)
     decision_journal: list[dict[str, Any]] = field(default_factory=list)
@@ -292,6 +293,7 @@ class ScientificState:
             "reviews": list(self.reviews),
             "quality": dict(self.quality),
             "resources": dict(self.resources),
+            "objective": dict(self.objective),
             "design_revisions": list(self.design_revisions),
             "retired_lineages": list(self.retired_lineages),
             "decision_journal": list(self.decision_journal),
@@ -342,6 +344,7 @@ class ScientificState:
             reviews=_copy_rows(row.get("reviews")),
             quality=dict(row.get("quality") or {}),
             resources=dict(row.get("resources") or {}),
+            objective=dict(row.get("objective") or {}),
             design_revisions=_copy_rows(row.get("design_revisions")),
             retired_lineages=_copy_rows(row.get("retired_lineages")),
             decision_journal=_copy_rows(row.get("decision_journal")),

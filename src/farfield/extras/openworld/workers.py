@@ -254,14 +254,39 @@ class LegacyResearchWorkers:
                             gaps.append({"source": source.cite_id, "target": target.cite_id, "reason": str(exc)})
                             transition = extract_transition(source, target)
                         transitions.append(transition.to_dict())
+                # Anchor the research state on papers that bear on the question.
+                # A live run anchored an iris-morphometrics question to a paper on
+                # first-order conic programming because both mention "geometry",
+                # and the generated hypothesis then defended itself against a
+                # flower-reconstruction paper. Off-topic retrievals are recorded,
+                # not used to frame the science.
+                from .exploration import relevance_report
+
+                root = str(state.get("contract", {}).get("root_question") or topic)
+                relevance = relevance_report(root, [
+                    {"cite_id": p.cite_id, "title": p.title, "abstract": p.abstract,
+                     "problem": p.problem, "research_question": p.research_question}
+                    for p in papers])
+                usable = set(relevance["usable"])
+                anchoring = [p for p in papers if p.cite_id in usable] or []
                 anchor = {"problem": topic, "research_question": str(question.get("text") or topic),
-                          "epistemic": "GENERATED", "anchor_basis": [p.cite_id for p in papers],
+                          "epistemic": "GENERATED",
+                          "anchor_basis": [p.cite_id for p in anchoring],
+                          "retrieval_relevance": relevance,
+                          "off_topic_not_anchored": relevance["off_topic"],
                           "unresolved_questions": [r.get("text") for r in state.get("open_questions", [])],
                           "actual_evidence": list(state.get("evidence_records", []))}
                 for name in ("bottleneck_gap", "assumptions", "representation", "evidence"):
-                    anchor[name] = list(dict.fromkeys(getattr(p, name) for p in papers if getattr(p, name) != "unknown"))
+                    anchor[name] = list(dict.fromkeys(
+                        getattr(p, name) for p in anchoring if getattr(p, name) != "unknown"))
+                if relevance["gap"]:
+                    gaps.append({"reason": relevance["gap"],
+                                 "retrieved": len(papers),
+                                 "note": "the anchor is empty rather than built from "
+                                         "papers that only share a word"})
                 artifact.update(paper_states=[p.to_dict() for p in papers], research_transitions=transitions,
-                                research_state=anchor, extraction_gaps=gaps)
+                                research_state=anchor, extraction_gaps=gaps,
+                                retrieval_relevance=relevance)
             _json(path, artifact)
             return CandidateResult(status="surveyed", events=[make_event(
                 "ArtifactAdded", artifact, action_type=SURVEY,
@@ -329,9 +354,12 @@ class LegacyResearchWorkers:
                 or parent_id and (not parent or parent.get("question_id") != action.target)):
             return self._failure(action, "parent_lineage_or_hop_mismatch")
         # Re-read canonical state, never trust caller-supplied evidence_context.
-        evidence = [r for r in state.get("evidence_records", []) if r.get("theory_id") == parent_id
-                    and r.get("epistemic") == "WORLD" and r.get("attested")
-                    and r.get("execution_status") == "ran" and r.get("world_digest") and r.get("experiment_digest")]
+        # One definition of "the parent's admitted evidence", shared with
+        # operator selection so the hop gate and the choice of transformation
+        # cannot disagree about what exists.
+        from .exploration import admitted_evidence_for
+
+        evidence = admitted_evidence_for(state, parent_id)
         failures = [r for r in state.get("failed_designs", []) if r.get("theory_id") == parent_id]
         if hop > 1 and not (evidence or failures):
             return self._failure(action, "next_hop_requires_actual_parent_evidence_or_explicit_failure")
@@ -346,7 +374,7 @@ class LegacyResearchWorkers:
         selected = retrieve_transitions(anchor, transitions)
         policy = next((r.get("policy") for r in reversed(state.get("artifacts", []))
                        if r.get("kind") == "research_policy_snapshot"), None)
-        if policy:
+        if policy and selected:
             from ..routing import preferred_operators
             order = preferred_operators(policy, tuple(dict.fromkeys(t.operator for t in selected)))
             selected.sort(key=lambda t: order.index(t.operator))
@@ -362,10 +390,24 @@ class LegacyResearchWorkers:
             lane_fallback = "trajectory_supported_had_no_applicable_transition"
             lane = "assumption_reframe"
         chosen = selected[:2] if lane == "trajectory_supported" else []
-        operator = chosen[0].operator if chosen else (
-            "representation_change" if evidence else "assumption_removal")
-        if lane == "unconstrained":
-            operator = "unconstrained_exploration"
+        if chosen:
+            # A grounded historical transition names its own operator.
+            operator = chosen[0].operator
+            selection = {"operator": operator, "basis": "grounded_historical_transition",
+                         "considered": [t.operator for t in selected]}
+        else:
+            # Without one, the transformation is *selected* from what this state
+            # admits, what this project's own credit prefers, and what has not
+            # already been asked of this question. It used to be a constant, so
+            # two runs of the same question could not differ and the installed
+            # policy — which only reordered retrieved operators — touched nothing.
+            from .exploration import select_operator
+            from .state import ScientificState
+
+            selection = select_operator(
+                ScientificState.from_dict(dict(state)), lane=lane,
+                question_id=action.target, parent=parent, policy=policy)
+            operator = selection["operator"]
         schema = {
             "assumptions": ["explicit unresolved assumption"],
             "competing_explanations": [{"id": "alternative", "claim": "substantive alternative mechanism",
@@ -445,8 +487,15 @@ class LegacyResearchWorkers:
                         "experiment_proposal")
             if any(not metadata.get(k) for k in required) or card.falsifier == "claim_contains_a_falsifiable_assertion":
                 raise ValueError("structured_hypothesis_contract_missing")
-            if not set(metadata["closest_prior_work"]).issubset({w.cite_id() for w in works}):
-                raise ValueError("closest_prior_work_must_be_verified_literature")
+            citable = {w.cite_id() for w in works}
+            relevance = next((r.get("retrieval_relevance") for r in reversed(surveys)
+                              if r.get("retrieval_relevance")), None)
+            if relevance and relevance.get("usable"):
+                # A paper that merely shares a word with the question is not the
+                # closest prior work to it.
+                citable &= set(relevance["usable"])
+            if not set(metadata["closest_prior_work"]).issubset(citable):
+                raise ValueError("closest_prior_work_must_be_verified_literature_on_this_question")
             paper_targets = [{"target_state": p} for r in surveys for p in r.get("paper_states", [])]
             paper_targets += [{"target_state": w.to_dict()} for w in works]
             rejected = copy_check(card.to_dict(), transitions + paper_targets)
@@ -478,7 +527,9 @@ class LegacyResearchWorkers:
                 "falsifier": card.falsifier, "discriminating_prediction": card.prediction,
                 "predictions": [card.prediction], "card": card.to_dict(), "epistemic": "GENERATED",
                 "research_lane": lane, "requested_lane": action.extra["research_lane"],
-                "operator_reused": operator, "source_trajectories_used": [
+                "operator_reused": operator,
+                "operator_selection": selection,
+                "source_trajectories_used": [
                     {"source": t.source_cite_id, "target": t.target_cite_id, "operator": t.operator,
                      # How this trajectory was retrieved. An overlap match
                      # proposes a historical operator; it does not assert that
