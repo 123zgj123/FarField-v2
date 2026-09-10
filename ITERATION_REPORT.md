@@ -166,3 +166,79 @@ Long-horizon trajectories against a scripted world, 30 actions:
 - Efficiency thresholds in the long-horizon tests are floors measured against
   the current controller, not targets derived from anything external.
 - `merge_branches` remains without a live caller in the runtime.
+
+---
+
+## Round 6 — two mechanisms the runtime claimed and did not have
+
+Analysis of where academic capability was actually constrained produced one
+result worth stating plainly: **the obvious "get more data" answer was wrong.**
+
+`ARCHITECTURE.md` recorded the missing piece as a broad learned transition
+corpus. Testing the retriever showed why that would have been wasted work:
+
+| current research state vs. a historical applicability condition | matched |
+|---|---|
+| identical | yes |
+| case / whitespace difference | yes |
+| paraphrase | **no** |
+| more specific restatement | **no** |
+| same meaning, different words | **no** |
+
+Both sides are free text a model extracted from *different* papers. Requiring
+byte equality is not a strict test, it is a test that never fires. Ten thousand
+transitions would have changed nothing; the bottleneck was representational.
+
+**Fix 1 — graded, negation-safe retrieval.** Normalized equality establishes
+applicability. Same-polarity content-word overlap above threshold proposes it,
+labelled `proposed` because lexical proximity is not applicability. Disagreeing
+polarity is a contradiction and never a match, so the most dangerous available
+false match — the same sentence with the opposite sense — is refused explicitly.
+`known_failure_conditions` had been extracted since the beginning and read by
+nothing; a transition recorded as failing under the present circumstances is now
+excluded. A lane that falls back records the substitution instead of swallowing
+it. Retrieval sits in GENERATED space upstream of the kernel, so its risk is
+anchoring, not false evidence, and the labelling bounds it.
+
+**Fix 2 — an acquisition recipe registry.** ACQUIRE supported exactly one gap
+and failed closed on everything else, while seventeen attested worlds sat on
+disk it had no way to bind. `no_acquisition_recipe` was the most common terminal
+blockage in a run. Recipes now cover derivation from the attested parent and
+binding of an already-attested catalog world whose own manifest declares what
+the gap names. Nothing is fetched, nothing is synthesized, and no recipe reaches
+the network — an operator-pinned URL with an expected source digest would be the
+minimum for that, because letting a model name a URL lets it choose its own
+evidence.
+
+**The integrity tests caught the real hazard, and they were right.** With
+binding enabled, two tests that assert auto mode does not invent observations
+began to fail. Reading attested Iris bytes is not inventing an observation — but
+*deciding for itself what the object of study is* is a scope decision, and a
+wrongly matched world produces genuine WORLD evidence that answers a question
+nobody asked. Scope belongs to the contract, so `world_selection` defaults to
+`declared_only`; an unauthorised run blocks and reports which world would have
+satisfied the gap. Both tests pass unchanged.
+
+End-to-end, replay mode, same topic:
+
+```
+before  ACQUIRE blocked(no_acquisition_recipe) ... -> BLOCKED, nothing observed
+after   ACQUIRE blocked(world_selection_not_authorised_by_contract)   [default]
+        ACQUIRE acquired -> OBSERVE observed -> VERIFY verified       [authorised]
+```
+
+Tests: 1353 passing, up from 1311. Behavioural 8/8 and trajectory metrics
+unchanged.
+
+**What this says about the data question.** Executable worlds are the binding
+constraint on academic capability, not papers and not trajectories — without a
+world that can answer the question, `central_claim_support` can never leave
+`missing` and `RESEARCH_READY` is unreachable. The useful next investment is
+more recipe kinds and more attested worlds in domains people actually want to
+study, not corpus volume. A transition corpus only starts paying back now that
+the retriever can use one.
+
+One thing deliberately not done: calibrating `novelty` and `importance` against
+real acceptance decisions. That trains a predictor of acceptance, not of
+scientific value, and would contradict the system's own rule that reviewer
+judgment is not evidence.

@@ -460,7 +460,46 @@ def execute_acquire(env: Any, action: ActionInstance) -> CandidateResult:
         )
     parent = fixture_from_root(parent_root, parent_id or parent_root.name)
     gap = str(action.extra.get("gap") or "validator_snapshots")
-    if gap != "validator_snapshots" or not _parent_records(parent_root):
+    from .recipes import CATALOG_BINDING, resolve_recipe
+
+    bound = {str(row.get("id") or row.get("world_id") or "")
+             for row in view.get("world_versions") or []}
+    catalog = action.extra.get("catalog")
+    if catalog is None:
+        from ..freeze import default_catalog
+
+        catalog = default_catalog()
+    question = dict(action.extra.get("question") or {})
+    from .contract import contract_from_state
+
+    # Deriving a child from the bound parent stays with the current object of
+    # study. Binding a *different* world changes what the results are about, so
+    # the contract has to authorise it.
+    authorised = contract_from_state(env.state).world_selection == "catalog_match"
+    recipe = resolve_recipe(
+        gap, catalog=Path(catalog),
+        parent_supports_derivation=bool(_parent_records(parent_root)),
+        exclude=bound,
+        question=str(question.get("text") or view.get("goal") or ""))
+    if recipe is not None and recipe.kind == CATALOG_BINDING and not authorised:
+        # Report what *would* satisfy this gap. A blocked run that names its
+        # unlock is useful; one that silently picks its own subject matter is
+        # answering a question nobody asked.
+        return CandidateResult(
+            status="blocked", world_id=parent.id,
+            events=[make_event("ActionBlocked", {
+                "reason": "world_selection_not_authorised_by_contract",
+                "question_id": action.target, "gap": gap,
+                "candidate_world": recipe.world_id,
+            }, action_type=ACQUIRE,
+                frontier_target_id=action.frontier_target_id or action.target)],
+            extras={"reason": "world_selection_not_authorised_by_contract", "gap": gap,
+                    "candidate_recipes": [recipe.to_dict()],
+                    "next": ("Bind the world explicitly, or set the contract's "
+                             "world_selection to 'catalog_match' to let the run choose "
+                             "an attested catalog world for itself.")},
+        )
+    if recipe is None:
         return CandidateResult(
             status="blocked", world_id=parent.id,
             events=[make_event("ActionBlocked", {
@@ -469,6 +508,61 @@ def execute_acquire(env: Any, action: ActionInstance) -> CandidateResult:
             }, action_type=ACQUIRE, frontier_target_id=action.frontier_target_id or action.target)],
             extras={"reason": "no_acquisition_recipe", "gap": gap,
                     "next": "Provide a frozen dataset and a matching acquisition recipe."},
+        )
+    if recipe.kind == CATALOG_BINDING:
+        # Bind bytes that were already attested. Nothing is fetched, nothing is
+        # synthesized, and the attestation check still decides.
+        from .worldio import bind_fixture
+
+        try:
+            bound_world = bind_fixture(Path(env.workspace), load_fixture(Path(recipe.root)),
+                                       recipe.world_id)
+        except (OSError, ValueError, KeyError) as exc:
+            return CandidateResult(
+                status="blocked", world_id=parent.id,
+                events=[make_event("ActionBlocked", {
+                    "reason": "catalog_world_could_not_be_bound", "gap": gap,
+                    "world_id": recipe.world_id, "detail": str(exc),
+                }, action_type=ACQUIRE,
+                    frontier_target_id=action.frontier_target_id or action.target)],
+                extras={"reason": "catalog_world_could_not_be_bound", "gap": gap})
+        if not is_attested(bound_world):
+            return CandidateResult(
+                status="blocked", world_id=parent.id,
+                events=[make_event("ActionBlocked", {
+                    "reason": "bound_world_is_not_attested", "gap": gap,
+                    "world_id": recipe.world_id,
+                }, action_type=ACQUIRE,
+                    frontier_target_id=action.frontier_target_id or action.target)],
+                extras={"reason": "bound_world_is_not_attested", "gap": gap})
+        payload = {
+            "id": bound_world.id, "world_id": bound_world.id, "digest": bound_world.digest,
+            "observables": bound_world.schema, "files": list(bound_world.files),
+            "path": str(bound_world.root), "schema": bound_world.schema,
+            "domains": list(bound_world.domains or ()),
+            # An acquired world is the object under study, never a heldout
+            # replication world: naming it so would let a single freeze
+            # replicate itself.
+            "research_role": "world", "role": "world",
+            "acquisition_recipe": recipe.to_dict(),
+        }
+        return CandidateResult(
+            status="acquired", world_id=bound_world.id, unlocked=True,
+            events=[
+                make_event("WorldCreated", payload, action_type=ACQUIRE,
+                           frontier_target_id=action.frontier_target_id or action.target),
+                make_event("WorldAttested", {
+                    "id": bound_world.id, "world_id": bound_world.id,
+                    "digest": bound_world.digest,
+                    "world_evidence_id": bound_world.world_evidence_id,
+                }, action_type=ACQUIRE,
+                    frontier_target_id=action.frontier_target_id or action.target),
+                make_event("CapabilityValidated", {"name": gap, "world_id": bound_world.id,
+                                                   "basis": "attested_catalog_world"},
+                           action_type=ACQUIRE),
+            ],
+            extras={"gap": gap, "recipe": recipe.to_dict(), "world_id": bound_world.id,
+                    "plan": plan.to_dict()},
         )
     child_id = next_world_label(parent_id or "W0")
     dest = Path(env.workspace) / "worlds" / child_id if env.workspace else parent_root.parent / child_id

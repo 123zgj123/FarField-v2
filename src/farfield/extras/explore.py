@@ -1057,6 +1057,10 @@ class ResearchTransition:
     why_progress_occurred: str = "unknown"
     evidence_that_supported_transition: str = "unknown"
     applicability_conditions: dict[str, str] = field(default_factory=dict)
+    # Per-query retrieval provenance, attached by ``retrieve_transitions``.
+    # Not persisted content: a restored transition is re-matched, never trusted
+    # to carry a previous query's verdict.
+    retrieval: dict[str, Any] = field(default_factory=dict)
     known_failure_conditions: Any = "unknown"
     source_cite_id: str = ""
     target_cite_id: str = ""
@@ -1323,43 +1327,170 @@ def _research_restore_transition(row: dict[str, Any]) -> ResearchTransition:
     )
 
 
+# A condition and a research state are both free text extracted by a model from
+# different papers. Requiring them to be byte-identical is not a strict test,
+# it is a test that never fires: the trajectory lane was a capability the system
+# claimed and did not have, and it failed silently into another lane.
+#
+# Overlap can *propose* that a historical transition is worth considering. It
+# can never *establish* that the transition applies. Retrieval sits entirely in
+# GENERATED space upstream of the kernel: its output is prompt input for
+# hypothesis generation, and every hypothesis it inspires still has to pass the
+# copy screen, the literature check, registration, execution and the promotion
+# ladder. What it must never do is erase a negation.
+CONDITION_CONTAINMENT = 0.6
+CONDITION_MIN_SHARED = 3
+
+_NEGATION_MARKERS = frozenset(
+    """not no never none neither nor without cannot can t won won t don don t
+    does doesn doesn t did didn didn t isn isn t aren aren t fails fail failed
+    failing lacks lack lacking lacked absent missing unable inability rarely
+    seldom""".split()
+)
+
+
+def condition_polarity(text: str) -> str:
+    """``negative`` when the text carries an explicit negation marker.
+
+    Word-level markers only. Prefixes such as ``non-`` or ``in-`` are not read
+    as negation: guessing there would produce exactly the silent polarity flip
+    this guard exists to prevent.
+    """
+    words = "".join(ch.lower() if ch.isalnum() else " " for ch in str(text or "")).split()
+    return "negative" if any(word in _NEGATION_MARKERS for word in words) else "positive"
+
+
+def condition_match(condition: str, value: str) -> dict[str, Any]:
+    """Compare a historical applicability condition with a current-state field.
+
+    Returns the match basis, never a bare boolean, so the caller can record
+    whether applicability was established or merely proposed.
+
+    ``exact``   normalized equality; applicability established.
+    ``overlap`` same polarity, content-word containment above threshold, and
+                enough shared words to be more than a coincidence; applicability
+                proposed for consideration.
+    ``none``    everything else, including any polarity disagreement.
+    """
+    from .prior import content_tokens
+
+    left, right = _research_text(condition), _research_text(value)
+    if not left or not right:
+        return {"basis": "none", "score": 0.0, "shared": 0, "reason": "empty_condition"}
+    if left.casefold() == right.casefold():
+        return {"basis": "exact", "score": 1.0, "shared": 0, "reason": ""}
+    if condition_polarity(left) != condition_polarity(right):
+        # A near-identical sentence with the opposite polarity is the most
+        # dangerous false match available here, so it is refused explicitly.
+        return {"basis": "none", "score": 0.0, "shared": 0, "reason": "polarity_differs"}
+    a, b = content_tokens(left), content_tokens(right)
+    if not a or not b:
+        return {"basis": "none", "score": 0.0, "shared": 0, "reason": "no_content_words"}
+    shared = a & b
+    containment = len(shared) / min(len(a), len(b))
+    if len(shared) >= CONDITION_MIN_SHARED and containment >= CONDITION_CONTAINMENT:
+        return {"basis": "overlap", "score": round(containment, 4), "shared": len(shared),
+                "reason": ""}
+    return {"basis": "none", "score": round(containment, 4), "shared": len(shared),
+            "reason": "below_overlap_threshold"}
+
+
+def _failure_condition_hit(transition: "ResearchTransition", state: dict[str, Any]) -> str:
+    """Does the current state match a condition this transition is known to fail under?
+
+    ``known_failure_conditions`` was extracted from the source papers and then
+    never read by anything. A transition whose recorded failure condition
+    describes the situation at hand is the last one that should be reused.
+    """
+    known = transition.known_failure_conditions
+    rows = known.items() if isinstance(known, dict) else (
+        [(name, known) for name in _STRUCTURAL_FIELDS] if _research_known(known) else [])
+    for name, condition in rows:
+        values = state.get(name)
+        values = values if isinstance(values, (list, tuple)) else [values]
+        for value in values:
+            if not _research_known(value):
+                continue
+            if condition_match(str(condition), str(value))["basis"] != "none":
+                return f"{name}:{_research_text(condition)[:80]}"
+    return ""
+
+
 def retrieve_transitions(state: dict[str, Any], transitions: Any, limit: int = 6) -> list[ResearchTransition]:
     """Rank grounded transitions by matching structural fields, not topics.
 
     Recognized current-state keys are bottleneck_gap, assumptions,
     representation, evidence. Values may be text or lists of text. At least
-    one source condition must match; unknown current fields do not vote.
-    Conditions match normalized text exactly; lexical proximity cannot
-    establish applicability or erase a negation. Contradictions exclude
-    a transition. Serialized
-    transition mappings are re-extracted from their grounded paper states.
+    one source condition must match; unknown current fields do not vote. Every
+    condition present on both sides must match, so a single disagreement still
+    excludes the transition.
+
+    A match is graded, and the grade travels with the result. Normalized
+    equality establishes applicability. Same-polarity content-word overlap
+    above threshold proposes it, and is labelled ``proposed`` precisely because
+    lexical proximity is not applicability. Disagreeing polarity is a
+    contradiction and never a match, so a near-identical sentence with the
+    opposite sense cannot be retrieved as support.
+
+    A transition whose ``known_failure_conditions`` describe the current state
+    is excluded regardless of how well its applicability conditions match.
+
+    Serialized transition mappings are re-extracted from their grounded paper
+    states; a persisted retrieval verdict is never trusted.
     """
     if limit <= 0:
         return []
+    from dataclasses import replace as _replace
+
     ranked = []
     for transition in transitions:
         if isinstance(transition, dict):
             transition = _research_restore_transition(transition)
         if not isinstance(transition, ResearchTransition) or transition.status != "extracted" or transition.operator not in RESEARCH_OPERATORS:
             continue
-        matches = 0
+        failure = _failure_condition_hit(transition, state)
+        if failure:
+            continue
+        exact = 0
+        proposed = 0
         contradictions = 0
+        score = 0.0
+        matched_fields: dict[str, dict[str, Any]] = {}
         for name, condition in transition.applicability_conditions.items():
             values = state.get(name)
             values = values if isinstance(values, (list, tuple)) else [values]
             values = [value for value in values if _research_known(value)]
             if not values:
                 continue
-            matched = any(
-                _research_text(value).casefold() == _research_text(condition).casefold()
-                for value in values
-            )
-            matches += int(matched)
-            contradictions += int(not matched)
-        if matches and not contradictions:
-            ranked.append((-matches, transition.source_cite_id, transition.target_cite_id, transition))
-    ranked.sort(key=lambda row: row[:3])
-    return [row[3] for row in ranked[:limit]]
+            best = max((condition_match(str(condition), str(value)) for value in values),
+                       key=lambda row: ({"none": 0, "overlap": 1, "exact": 2}[row["basis"]],
+                                        row["score"]))
+            if best["basis"] == "exact":
+                exact += 1
+            elif best["basis"] == "overlap":
+                proposed += 1
+            else:
+                contradictions += 1
+                continue
+            score += float(best["score"])
+            matched_fields[name] = best
+        if not (exact + proposed) or contradictions:
+            continue
+        basis = "exact" if not proposed else ("mixed" if exact else "overlap")
+        stamped = _replace(transition, retrieval={
+            "match_basis": basis,
+            "applicability": "established" if basis == "exact" else "proposed",
+            "exact_conditions": exact,
+            "proposed_conditions": proposed,
+            "matched_fields": matched_fields,
+            "score": round(score, 4),
+            "note": ("overlap proposes a historical operator for consideration; "
+                     "it does not establish that the transition applies"),
+        })
+        ranked.append((-exact, -proposed, -round(score, 4),
+                       transition.source_cite_id, transition.target_cite_id, stamped))
+    ranked.sort(key=lambda row: row[:5])
+    return [row[5] for row in ranked[:limit]]
 
 
 def copy_check(hypothesis: dict[str, Any], transitions: Any) -> tuple[str, ...]:

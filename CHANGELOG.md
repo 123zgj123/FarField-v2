@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-10 — Trajectory retrieval and world acquisition
+
+Two mechanisms the runtime claimed and did not have.
+
+- **Trajectory retrieval could not fire.** Applicability conditions and current
+  research states are both free text a model extracted from different papers,
+  and matching required byte equality, so the `trajectory_supported` lane
+  effectively never matched and degraded into `assumption_reframe` without
+  recording it. Matching is now graded and the grade travels with the result:
+  normalized equality establishes applicability, same-polarity content-word
+  overlap above threshold proposes it and is labelled `proposed`, and
+  disagreeing polarity is a contradiction that can never be a match — a
+  near-identical sentence with the opposite sense cannot be retrieved as
+  support. `known_failure_conditions`, extracted since the beginning and read by
+  nothing, now exclude a transition whose recorded failure describes the
+  situation at hand. A lane that falls back records the substitution.
+- **Acquisition had one recipe.** Seventeen attested worlds sat on disk that a
+  blocked run had no way to bind, which made `no_acquisition_recipe` the most
+  common terminal blockage. ACQUIRE now resolves a gap against a recipe
+  registry: derive a child from the attested parent, or bind an already-attested
+  catalog world whose own manifest declares the schema or domains the gap names.
+  Nothing is fetched and nothing is synthesized. No recipe reaches the network,
+  because letting a model name a URL lets it choose its own evidence.
+- **Choosing the object of study is a scope decision.** Binding a different
+  world decides what the results are about, so the contract owns it:
+  `world_selection` defaults to `declared_only`. A run that would otherwise pick
+  its own subject matter blocks and reports which world would have satisfied the
+  gap. A wrongly matched world still produces genuine WORLD evidence — about a
+  question nobody asked — so the default is to stay blocked and say so.
+
+Tests: 1353 passing (6 skipped), up from 1311.
+
 ## 2026-09-09 — Research project management
 
 The runtime could already produce hypotheses, run experiments and verify

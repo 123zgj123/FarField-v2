@@ -317,10 +317,14 @@ class LegacyResearchWorkers:
             selected.sort(key=lambda t: order.index(t.operator))
         if evidence and any(r.get("outcome") in {"weakens", "negative"} for r in evidence):
             selected = [t for t in selected if t.operator != parent.get("operator_reused")]
+        lane_fallback = ""
         if lane == "trajectory_supported" and not selected:
             if not parent_id:
                 return self._failure(action, "no_applicable_grounded_trajectory", research_lane=lane)
             # An evidence-driven pivot may leave a depleted historical library.
+            # Record the substitution: a lane that quietly becomes another lane
+            # is how a system keeps reporting a capability it stopped using.
+            lane_fallback = "trajectory_supported_had_no_applicable_transition"
             lane = "assumption_reframe"
         chosen = selected[:2] if lane == "trajectory_supported" else []
         operator = chosen[0].operator if chosen else (
@@ -440,7 +444,18 @@ class LegacyResearchWorkers:
                 "predictions": [card.prediction], "card": card.to_dict(), "epistemic": "GENERATED",
                 "research_lane": lane, "requested_lane": action.extra["research_lane"],
                 "operator_reused": operator, "source_trajectories_used": [
-                    {"source": t.source_cite_id, "target": t.target_cite_id, "operator": t.operator} for t in chosen],
+                    {"source": t.source_cite_id, "target": t.target_cite_id, "operator": t.operator,
+                     # How this trajectory was retrieved. An overlap match
+                     # proposes a historical operator; it does not assert that
+                     # the historical transition applies here.
+                     "match_basis": (t.retrieval or {}).get("match_basis", "unknown"),
+                     "applicability": (t.retrieval or {}).get("applicability", "unknown"),
+                     "matched_fields": sorted((t.retrieval or {}).get("matched_fields") or {}),
+                     } for t in chosen],
+                "lane_fallback": lane_fallback,
+                "trajectory_applicability": "established" if chosen and all(
+                    (t.retrieval or {}).get("applicability") == "established" for t in chosen)
+                    else ("proposed" if chosen else "none"),
                 "hop": hop, "parent_theory_id": parent_id,
                 "transition_kind": action.extra.get("transition_kind", "first_hop"),
                 "failure_pivots": int(action.extra.get("failure_pivots") or 0),

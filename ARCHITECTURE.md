@@ -165,10 +165,31 @@ inherited and genuinely changed components, claim/mechanism deltas, and an
 explanation of why they are not historical reconstruction. Copy checks and the
 existing apply-X-to-Y rejection rule constrain proposals; neither proves novelty.
 
-Current retrieval uses structural matching of research-state conditions, not
-embedding distance as scientific value. Coverage and matching are limited:
-there is no broad learned transition corpus or trained
-`P(operator | research_state, gap, evidence)` yet.
+Retrieval matches research-state conditions structurally, never embedding
+distance as scientific value. A condition and a current research state are both
+free text a model extracted from different papers, so requiring them to be
+byte-identical was not a strict test but one that never fired — the trajectory
+lane was a claimed capability the runtime did not have, and losing it degraded
+silently into another lane.
+
+Matching is therefore graded, and the grade travels with the result. Normalized
+equality **establishes** applicability. Same-polarity content-word overlap above
+threshold **proposes** it, labelled as such because lexical proximity is not
+applicability. Disagreeing polarity is a contradiction and never a match, so a
+near-identical sentence with the opposite sense cannot be retrieved as support.
+A transition whose recorded `known_failure_conditions` describe the situation at
+hand is excluded however well its applicability conditions match. A lane that
+falls back records the substitution on the hypothesis.
+
+Retrieval lives entirely in GENERATED space upstream of the kernel: its output
+is prompt input, and a hypothesis it inspires still has to pass the copy screen,
+the literature check, registration, execution and the promotion ladder. It
+cannot mint evidence; its real risk is anchoring on an irrelevant historical
+operator, which is bounded by the labelling and the failure-condition exclusion.
+
+Coverage remains limited: there is no broad learned transition corpus or trained
+`P(operator | research_state, gap, evidence)` yet. Corpus size was never the
+binding constraint while the matcher could not use one.
 
 ## Evidence-driven later hops
 
@@ -275,6 +296,29 @@ The active policy is snapshotted for a session; admission affects later sessions
 Research-time `OpenWorld.evolve()` only records proposals. A model score,
 single-task improvement, survival rate, or self-consistency is not an admission
 receipt. Tests establish these local guards, not successful live RSI.
+
+## Obtaining a world
+
+An agent that cannot obtain the object its question is about cannot answer the
+question, and no amount of scheduling changes that. ACQUIRE resolves a declared
+gap against a recipe registry:
+
+- `derived` — build a child world from the attested parent already bound. This
+  stays with the current object of study.
+- `catalog_binding` — bind an already-attested world from the local catalog
+  whose own manifest declares the schema or domains the gap names. Nothing is
+  fetched and nothing is synthesized; the attestation check still decides.
+
+No recipe reaches the network. A network recipe would need an operator-pinned
+URL *and* an expected source digest, because letting a model name a URL lets it
+choose its own evidence. An unresolved gap fails closed, unchanged.
+
+Binding a *different* world decides what the project's results will be about, so
+it is a scope decision the contract owns: `world_selection` defaults to
+`declared_only`, and a run that would otherwise pick its own subject matter
+blocks and reports which world would have satisfied the gap. A wrongly matched
+world still produces genuine WORLD evidence — it just answers a question nobody
+asked, which is why the default is to stay blocked and say so.
 
 ## Operational boundaries
 

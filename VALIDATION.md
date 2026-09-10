@@ -54,6 +54,10 @@ code; its absence rejects admission. This is not evidence that live RSI works.
 | Real advancement credited exactly once | `test_research_efficiency.py` |
 | Capability-level decision behaviour | `behavioral/test_research_scenarios.py` |
 | Long-horizon trajectory guarantees | `behavioral/test_long_horizon.py` |
+| Trajectory retrieval fires, and never erases a negation | `test_research_retrieval.py` |
+| Known failure conditions exclude a transition | `test_research_retrieval.py` |
+| Acquisition binds attested bytes only, never the network | `test_research_acquisition.py` |
+| Choosing the object of study needs contract authorisation | `test_research_acquisition.py` |
 
 The parity tests run actual registered subprocesses against frozen test worlds
 with recorded-model responses. They compare identities, preregistration order,
@@ -108,7 +112,7 @@ failure modes do not occur.
 
 ## Reproduce offline verification
 
-Latest complete run: 1,311 tests (6 skipped, no failures or errors) including
+Latest complete run: 1,353 tests (6 skipped, no failures or errors) including
 30 contract tests, the historical regression tests, the eight behavioural
 scenarios and the long-horizon trajectory guarantees. `git diff --check` passed.
 
@@ -139,7 +143,13 @@ thirty-action run to expose:
 - the retry key hashed the whole state, so any unrelated change made a
   just-failed action look untried;
 - `REFLECT` and `ARCHIVE` emitted no events at all: they always reported success
-  and were structurally incapable of changing anything.
+  and were structurally incapable of changing anything;
+- trajectory retrieval compared two independently model-extracted free-text
+  fields for byte equality, so the `trajectory_supported` lane effectively never
+  fired and degraded into another lane without recording it;
+- ACQUIRE supported exactly one gap, so a run could not bind any of the attested
+  worlds on disk and `no_acquisition_recipe` was its most common terminal
+  blockage.
 
 ## Live-service observations and remaining validation
 

@@ -31,6 +31,13 @@ QUALITY_TARGETS = ("exploratory", "internal", "workshop", "conference", "archiva
 
 # Named research transitions a contract may authorise. Anything not listed is a
 # scope change and needs an explicit contract amendment, not a quiet redirect.
+# How the object of study may be chosen. Binding a world decides what the
+# project's results will be *about*, so it is a scope decision the contract
+# owns — not something a blocked run may settle for itself. A wrongly matched
+# world still produces genuine WORLD evidence; it just answers a question
+# nobody asked.
+WORLD_SELECTION = ("declared_only", "catalog_match")
+
 REFRAME_KINDS = (
     "mechanism_substitution",
     "measurement_repair",
@@ -94,6 +101,7 @@ class ResearchContract:
     # project is, in practice, researching something else.
     max_instrumental_depth: int = 2
     min_anchor_overlap: int = 2
+    world_selection: str = "declared_only"
     amendments: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,6 +120,7 @@ class ResearchContract:
             "termination_requirements": list(self.termination_requirements),
             "max_instrumental_depth": int(self.max_instrumental_depth),
             "min_anchor_overlap": int(self.min_anchor_overlap),
+            "world_selection": self.world_selection,
             "amendments": [dict(row) for row in self.amendments],
             "root_anchors": list(self.root_anchors),
         }
@@ -150,6 +159,9 @@ class ResearchContract:
             termination_requirements=texts("termination_requirements"),
             max_instrumental_depth=max(0, int(row.get("max_instrumental_depth") or 2)),
             min_anchor_overlap=max(1, int(row.get("min_anchor_overlap") or 2)),
+            world_selection=(str(row.get("world_selection") or "declared_only")
+                             if str(row.get("world_selection") or "") in WORLD_SELECTION
+                             else "declared_only"),
             amendments=tuple(
                 dict(item) for item in row.get("amendments") or [] if isinstance(item, Mapping)
             ),
