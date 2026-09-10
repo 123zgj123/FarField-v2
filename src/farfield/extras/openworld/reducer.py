@@ -413,12 +413,41 @@ def reduce_event(
     return current
 
 
+def refresh_design_revisions(state: ScientificState) -> None:
+    """Move a revision from open to attempted to settled.
+
+    Every revision in a live segment stayed ``open`` because nothing ever
+    reported that it had been carried out, so four of them accumulated while the
+    project ran one experiment. A revision is attempted once a hypothesis
+    carries it, and settled once that hypothesis has admitted evidence.
+    """
+    children: dict[str, list[str]] = {}
+    for theory in state.theories:
+        rid = str(theory.get("revision_id") or "")
+        if rid:
+            children.setdefault(rid, []).append(str(theory.get("id") or ""))
+    admitted = {
+        str(row.get("theory_id") or "")
+        for row in state.evidence_records
+        if str(row.get("epistemic") or "") == "WORLD" and row.get("promotion_ok")
+    }
+    for revision in state.design_revisions:
+        rid = str(revision.get("revision_id") or "")
+        kids = children.get(rid) or []
+        if not kids:
+            revision.setdefault("outcome", "open")
+            continue
+        revision["carried_out_by"] = kids
+        revision["outcome"] = "settled" if admitted.intersection(kids) else "attempted"
+
+
 def refresh_project_views(state: ScientificState) -> None:
     """Recompute contract-level projections after every admitted event.
 
     Quality and resources are derived, not written: no worker and no reviewer
     can assert that this project is good enough or that it has budget left.
     """
+    refresh_design_revisions(state)
     state.quality = compute_quality(state)
     state.resources = compute_resources(state)
     state.objective = objective_state(state)

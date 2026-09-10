@@ -164,6 +164,21 @@ def objective_state(state: Any) -> dict[str, Any]:
             frontier = row["score"]
             breakthroughs.append({**row, "previous_frontier": None if not breakthroughs
                                   else breakthroughs[-1]["score"]})
+    # Measurements that exist and did not qualify. Reporting only "results: 0"
+    # hides that the project measured something and the value was refused, which
+    # is the difference between "nothing happened" and "this did not hold up".
+    unscored = []
+    for row in getattr(state, "evidence_records", []) or []:
+        if str(row.get("role") or "") != "ProbeEvidence" or _scorable(row):
+            continue
+        value = row.get(metric.source)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            unscored.append({
+                "evidence_id": str(row.get("evidence_id") or ""),
+                "value": float(value),
+                "refused_because": ("not_corroborating" if row.get("cannot_corroborate")
+                                    else "not_admitted_world_evidence"),
+            })
     last = breakthroughs[-1]["admitted_at_tick"] if breakthroughs else None
     ticks = int(getattr(state, "ticks", 0) or 0)
     return {
@@ -173,6 +188,7 @@ def objective_state(state: Any) -> dict[str, Any]:
         "frontier": frontier,
         "frontier_evidence_id": breakthroughs[-1]["evidence_id"] if breakthroughs else "",
         "results": len(results),
+        "measured_but_unscored": unscored,
         "breakthroughs": breakthroughs,
         "breakthrough_count": len(breakthroughs),
         "ticks_since_breakthrough": None if last is None else max(0, ticks - last),

@@ -878,6 +878,7 @@ def worker_actions(state: ScientificState, actions: list[ActionInstance]) -> lis
                                    frontier_target_id=target, reason="literature_gap",
                                    extra={"extract_trajectories": True}))
         return unattempted_actions(state, found)
+    found.extend(repair_actions(state))
     questions = state.open_questions + state.blocked_questions + state.resolved_questions
     for question in questions:
         qid = str(question.get("id") or "")
@@ -1006,6 +1007,78 @@ def _read_slice(state: ScientificState, name: str, action: ActionInstance) -> An
                 "theories": [(r.get("id"), r.get("status")) for r in state.theories],
                 "capabilities": sorted(state.missing_capabilities)}
     return name
+
+
+# A repair type names what has to change; the transformation that changes it.
+REPAIR_OPERATOR = {
+    "experiment_redesign": "representation_change",
+    "measurement_redesign": "verifier_shift",
+    "causal_redesign": "mechanism_replacement",
+    "stronger_baseline": "boundary_search",
+    "broader_evaluation": "scaling",
+    "assumption_reframe": "assumption_inversion",
+    "representation_change": "representation_change",
+}
+
+
+def repair_actions(state: ScientificState) -> list[ActionInstance]:
+    """Turn an open design revision into the hypothesis that carries its repair.
+
+    A revision states what failed, what must change, and that only new WORLD
+    evidence can settle it. Nothing converted that into an experiment: four
+    revisions in one live segment produced no new hypothesis and no second
+    probe, so the project could not act on its own redesign and the repair loop
+    ended at a note. The revision now opens the obligation that produces the
+    repaired design; the experiment itself follows the ordinary probe path.
+    """
+    epoch = int(state.project_epoch)
+    attempted = {
+        str(row.get("revision_id") or "")
+        for row in state.theories if row.get("revision_id")
+    }
+    found: list[ActionInstance] = []
+    for revision in state.design_revisions:
+        rid = str(revision.get("revision_id") or "")
+        if (not rid or rid in attempted
+                or int(revision.get("project_epoch") or 0) != epoch
+                or str(revision.get("outcome") or "open") != "open"):
+            continue
+        # Resolve the parent to a hypothesis that exists, or to none. A repair
+        # aimed at a hypothesis id the state does not hold is refused downstream
+        # as a lineage mismatch, which is how four live revisions produced no
+        # experiment even after they reached the menu.
+        named = str(revision.get("parent_design") or "")
+        parent = next((row for row in state.theories
+                       if named and str(row.get("id") or "") == named), {})
+        if not parent:
+            parent = next((row for row in reversed(state.theories)
+                           if row.get("role") != "competing_explanation"
+                           and row.get("status") != "retired"), {})
+        parent_id = str(parent.get("id") or "")
+        qid = str(parent.get("question_id") or "")
+        if not qid:
+            qid = next((str(row.get("id") or "") for row in
+                        state.open_questions + state.blocked_questions), "")
+        if not qid:
+            continue
+        repair = str(revision.get("selected_repair") or "experiment_redesign")
+        found.append(ActionInstance(
+            SPECS[THEORIZE], target=qid, frontier_target_id=qid,
+            lineage_id=str(parent.get("lineage_id") or ""),
+            reason="carry_out_design_revision",
+            extra={
+                "research_lane": "assumption_reframe",
+                "hop": int(parent.get("hop") or 1) + 1 if parent else 1,
+                "parent_theory_id": parent_id,
+                "transition_kind": "design_repair",
+                "revision_id": rid,
+                "repair": repair,
+                "repair_operator": REPAIR_OPERATOR.get(repair, "representation_change"),
+                "changed_components": list(revision.get("changed_components") or []),
+                "failure_root_cause": str(revision.get("failure_root_cause") or ""),
+                "early_kill_condition": str(revision.get("early_kill_condition") or ""),
+            }))
+    return found
 
 
 def action_input_key(state: ScientificState, action: ActionInstance) -> str:

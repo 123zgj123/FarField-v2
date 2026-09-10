@@ -1268,7 +1268,11 @@ def execute_redesign(env: Any, action: ActionInstance) -> CandidateResult:
             f"{len(env.state.design_revisions) + 1}"
         ),
         "trigger": str(action.reason or "unresolved_objection"),
-        "parent_design": theory_id or str(demand.get("dimension") or ""),
+        # The design being revised, or empty when the demand came from a quality
+        # gap with no hypothesis attached. The dimension is recorded separately;
+        # putting it here made the parent a hypothesis id that does not exist.
+        "parent_design": theory_id if any(
+            str(row.get("id") or "") == theory_id for row in env.state.theories) else "",
         "failure_root_cause": root_cause,
         "invalidated_assumption": (
             (parent.get("assumptions") or [""])[0] if parent.get("assumptions")

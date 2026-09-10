@@ -361,7 +361,8 @@ class LegacyResearchWorkers:
 
         evidence = admitted_evidence_for(state, parent_id)
         failures = [r for r in state.get("failed_designs", []) if r.get("theory_id") == parent_id]
-        if hop > 1 and not (evidence or failures):
+        revision_id = str(action.extra.get("revision_id") or "")
+        if hop > 1 and not (evidence or failures or revision_id):
             return self._failure(action, "next_hop_requires_actual_parent_evidence_or_explicit_failure")
         surveys = [r for r in state.get("artifacts", []) if r.get("kind") == "literature_survey"
                    and r.get("question_id") in {"", action.target}]
@@ -395,6 +396,14 @@ class LegacyResearchWorkers:
             operator = chosen[0].operator
             selection = {"operator": operator, "basis": "grounded_historical_transition",
                          "considered": [t.operator for t in selected]}
+        elif revision_id:
+            # A repair hop already knows what has to change; the revision named
+            # it. Selecting freely here would discard the diagnosis.
+            operator = str(action.extra.get("repair_operator") or "representation_change")
+            selection = {"operator": operator, "basis": "carrying_out_design_revision",
+                         "revision_id": revision_id,
+                         "repair": action.extra.get("repair"),
+                         "changed_components": list(action.extra.get("changed_components") or [])}
         else:
             # Without one, the transformation is *selected* from what this state
             # admits, what this project's own credit prefers, and what has not
@@ -425,6 +434,15 @@ class LegacyResearchWorkers:
                 "interpretation_if_inconclusive": "what remains unknown", "expected_scientific_gain": 0.5,
                 "transfer_value": 0.5, "frontier_unlock": 0.5, "cost": 0.1, "risk": 0.1},
         }
+        repair_note = ""
+        if revision_id:
+            repair_note = (
+                "\nThis hypothesis carries a recorded design revision. Root cause: "
+                f"{action.extra.get('failure_root_cause')!r}. What must change: "
+                f"{list(action.extra.get('changed_components') or [])}. Abandon early if: "
+                f"{action.extra.get('early_kill_condition')!r}. The revised design must "
+                "differ in that named component; restating the previous design with new "
+                "wording does not repair anything.")
         instructions = ("In addition to the worker schema include a concrete falsifier and research_metadata following "
             "this shape (examples are schema only, NOT supplied scientific facts): " + json.dumps(schema) +
             "\nNo arbitrary confidence, copying a target paper or apply-X-to-Y-only claim. "
@@ -442,7 +460,8 @@ class LegacyResearchWorkers:
             "Also include study_design: primary estimand, randomized arms or justified observational scope, "
             "negative control, leakage-safe split, uncertainty analysis, and the smallest informative pilot. "
             "Do not claim novelty from distance or claim effectiveness from your own assessment. "
-            "A narrow executable diagnostic must not replace the original research question.")
+            "A narrow executable diagnostic must not replace the original research question."
+            + repair_note)
         transform = [{"source_state": t.source_state.to_dict(), "operator": t.operator,
                       "changed_component": t.changed_component, "applicability_conditions": t.applicability_conditions,
                       "known_failure_conditions": t.known_failure_conditions} for t in chosen]
@@ -544,6 +563,7 @@ class LegacyResearchWorkers:
                     else ("proposed" if chosen else "none"),
                 "hop": hop, "parent_theory_id": parent_id,
                 "transition_kind": action.extra.get("transition_kind", "first_hop"),
+                "revision_id": revision_id,
                 "failure_pivots": int(action.extra.get("failure_pivots") or 0),
                 "evidence_considered": [r["evidence_id"] for r in evidence],
                 "evidence_context_digest": sha256_text(json.dumps(evidence, sort_keys=True)),

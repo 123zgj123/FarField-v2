@@ -586,6 +586,7 @@ class OpenWorld:
         event["frontier"] = dict(self.state.frontier)
         event["debt"] = dict(self.state.debt)
         event["quality"] = dict(self.state.quality)
+        event["objective"] = dict(self.state.objective)
         event["resources"] = dict(self.state.resources)
         event["project_epoch"] = int(self.state.project_epoch)
         return event
