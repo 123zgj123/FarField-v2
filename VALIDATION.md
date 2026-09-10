@@ -231,6 +231,42 @@ retrieval was described as limited by corpus size; both the matcher *and* the
 step that builds the corpus were unusable, and no amount of corpus would have
 helped while retrieval returned nothing to match.
 
+## Far-field exploration, live: what each fix moved
+
+Seven bounded live segments against `gpt-5.6-sol`, run one after each fix, on
+the same question: *does petal geometry separate iris species better than sepal
+geometry?* The numbers are from the runtime's own trajectory telemetry.
+
+| run | nodes | provenance edges | transitions | restorable | retrieved | what changed before it |
+|-----|-------|------------------|-------------|------------|-----------|------------------------|
+| 1–6 | 0 | 0 | 0 | — | 0 | (the lane was offered and never used) |
+| 9 | 23 | 27 | 7 | 0 of 7 | 0 | citation expansion, canonical identity |
+| 10 | 22 | 28 | 10 | 0 of 10 | 0 | operator vocabulary, verifier_shift mapping |
+| 11 | 22 | 28 | 10 | **10 of 10** | 0 | lineage re-verified from recorded identifiers |
+| 12 | 37 | 63 | 4 | 4 of 4 | 0 | subject-anchored search phrase |
+| 13 | 37 | 63 | 4 | 4 of 4 | **1** | subject screen scoped to objects studied |
+
+Each run failed at a *later* point than the one before it, which is the only
+evidence that the fixes were causal rather than incidental. Runs 9 and 10 built
+a real graph and could not read it back. Run 11 could read it back and had
+nothing to compare against, because the anchor was built from conic programming
+and nanophotonics. Run 12 retrieved the right genus and screened all of it away.
+Run 13 admits three Iris papers, populates the anchor, and retrieves one
+grounded historical transition on an exact representation match.
+
+What is **not** established: that a hypothesis generated from that transition is
+better than one generated without it. The capability register keeps
+`trajectory_conditioned_exploration` at `partial` until a live mission produces
+a hypothesis carrying `source_trajectories_used`, and no claim about hypothesis
+quality is made anywhere on the basis of these runs.
+
+Cost, measured: one SURVEY spends at most twelve model calls — ten paper
+extractions capped by budget, two transition annotations — plus one call to name
+the search subject and one to screen the retrieval. Expanded citation nodes are
+read from title, abstract, year and reported references; no full text is fetched
+for them. In run 13 the shared extraction cache avoided nineteen re-reads of
+papers already extracted.
+
 ## Live-service observations and remaining validation
 
 The exact official model `gpt-5.6-sol` answered a connectivity request. Subsequent
