@@ -43,7 +43,16 @@ DIRECTIONS = (HIGHER, LOWER)
 # Fields an admitted probe row may carry that a task metric is allowed to read.
 # A metric naming anything else is refused rather than guessed at, so a contract
 # cannot quietly point the score at a field a model chose to write.
-SCORABLE_FIELDS = ("separation", "treatment", "control", "effect_size", "sample_size")
+SCORABLE_FIELDS = ("separation", "treatment", "control", "effect_size", "sample_size",
+                   "directed_separation")
+
+# A contrast that ran opposite to the pre-registered direction is not a strong
+# result, it is a refutation. Scoring raw `separation` with higher-is-better let
+# a `weakens` verdict at -0.18 stand as a live project's frontier: the metric
+# could not tell "large effect as predicted" from "large effect the other way".
+# `directed_separation` is the magnitude in the registered direction, floored at
+# zero, so a reversal scores as no support rather than as the best result yet.
+DIRECTED = "directed_separation"
 
 
 @dataclass(frozen=True)
@@ -108,9 +117,30 @@ def _scorable(row: Mapping[str, Any]) -> bool:
     )
 
 
+def directed_separation(row: Mapping[str, Any]) -> float | None:
+    """Separation in the pre-registered direction, floored at zero.
+
+    The registration fixed which way the arms should differ before the probe
+    ran. A result in that direction scores its magnitude; a result the other way
+    scores zero, because it did not support the claim at all — it contradicted
+    it, and a contradiction is not an improvement on the frontier.
+    """
+    value = row.get("separation")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    verdict = str(row.get("verdict") or row.get("outcome") or "")
+    if verdict in {"weakens", "negative", "contradicted"}:
+        return 0.0
+    if verdict == "uninformative":
+        return 0.0
+    return max(0.0, float(value))
+
+
 def score_of(metric: SuccessMetric, row: Mapping[str, Any]) -> float | None:
     if not metric.is_declared or not _scorable(row):
         return None
+    if metric.source == DIRECTED:
+        return directed_separation(row)
     value = row.get(metric.source)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None

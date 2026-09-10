@@ -866,6 +866,12 @@ def worker_actions(state: ScientificState, actions: list[ActionInstance]) -> lis
                 wid = str(world.get("id") or world.get("world_id") or "")
                 if world.get("research_role") != "heldout" or wid == row.get("world_id"):
                     continue
+                # A registered script names the file it reads, so two worlds can
+                # only host the same experiment when they share a payload name.
+                # Demanding a replication no script can perform left the
+                # dimension permanently missing and spent a tick each time.
+                if not _replication_compatible_ids(state, str(row.get("world_id") or ""), wid):
+                    continue
                 if any(r.get("replication_of") == row.get("evidence_id") and r.get("world_id") == wid for r in state.evidence_records):
                     continue
                 found.append(ActionInstance(SPECS[VERIFY], target=str(row.get("evidence_id")),
@@ -1078,6 +1084,29 @@ def repair_actions(state: ScientificState) -> list[ActionInstance]:
                 "early_kill_condition": str(revision.get("early_kill_condition") or ""),
             }))
     return found
+
+
+def _replication_compatible_ids(state: ScientificState, primary: str, heldout: str) -> bool:
+    """Can these two recorded worlds host the same registered experiment?"""
+    rows = {str(row.get("id") or row.get("world_id") or ""): dict(row)
+            for row in state.world_versions}
+    left, right = rows.get(primary) or {}, rows.get(heldout) or {}
+    if not left or not right:
+        return False
+    if left.get("schema") and right.get("schema") and left["schema"] != right["schema"]:
+        return False
+
+    def payloads(row: Mapping[str, Any]) -> set[str]:
+        from pathlib import Path as _Path
+
+        skip = {"seed.json", "origin.json", "manifest.json"}
+        return {_Path(str(name)).name for name in row.get("files") or []
+                if _Path(str(name)).name not in skip}
+
+    known = payloads(left), payloads(right)
+    if not all(known):
+        return True  # files not recorded on the row; let the worker decide
+    return bool(known[0] & known[1])
 
 
 def action_input_key(state: ScientificState, action: ActionInstance) -> str:

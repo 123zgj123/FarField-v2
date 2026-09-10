@@ -402,6 +402,36 @@ def _probe_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows if str(row.get("role") or "") == "ProbeEvidence"]
 
 
+def _replication_possible(state: Any) -> bool:
+    """Is there a heldout world a registered script could actually read?
+
+    A run bound to a primary whose heldout shares no payload filename is asked
+    for a replication no script can perform. Reporting that as "not attempted"
+    invites another attempt; reporting it as impossible names what would fix it.
+    """
+    from pathlib import Path as _Path
+
+    def payloads(row: Mapping[str, Any]) -> set[str]:
+        skip = {"seed.json", "origin.json", "manifest.json"}
+        return {_Path(str(name)).name for name in row.get("files") or []
+                if _Path(str(name)).name not in skip}
+
+    rows = list(getattr(state, "world_versions", []) or [])
+    primary = next((row for row in rows
+                    if str(row.get("id") or row.get("world_id") or "")
+                    == str(getattr(state, "world_id", ""))), {})
+    if not primary or not payloads(primary):
+        return True
+    for row in rows:
+        if row.get("research_role") != "heldout":
+            continue
+        if not payloads(row):
+            return True
+        if primary.get("schema") == row.get("schema") and payloads(primary) & payloads(row):
+            return True
+    return False
+
+
 def _min_sample(contract: ResearchContract) -> float:
     return float((contract.resource_limits or {}).get("min_sample_size") or 0)
 
@@ -596,7 +626,13 @@ def compute_quality(state: Any) -> dict[str, Any]:
     if not probes:
         force("replication", "missing", reason="nothing_to_replicate", work="PROBE")
     elif not replications:
-        force("replication", "missing", reason="no_heldout_replication_attempted", work="VERIFY")
+        heldout = [row for row in getattr(state, "world_versions", []) or []
+                   if row.get("research_role") == "heldout"]
+        force("replication", "missing",
+              reason=("no_heldout_world_can_host_the_registered_experiment"
+                      if heldout and not _replication_possible(state)
+                      else "no_heldout_replication_attempted"),
+              work="ACQUIRE" if heldout and not _replication_possible(state) else "VERIFY")
     elif not transferred:
         force("replication", "weak", reason="replication_attempted_but_did_not_transfer",
               work="REDESIGN")

@@ -22,6 +22,39 @@ def is_attested(fixture: WorldFixture) -> bool:
     )
 
 
+def payload_names(fixture: Any) -> set[str]:
+    """Payload files of a world, excluding its bookkeeping."""
+    from pathlib import Path as _Path
+
+    skip = {"seed.json", "origin.json", "manifest.json"}
+    return {_Path(str(name)).name for name in (getattr(fixture, "files", ()) or ())
+            if _Path(str(name)).name not in skip}
+
+
+def replication_compatible(primary: Any, heldout: Any) -> str:
+    """Why these two worlds cannot host the same registered experiment, or "".
+
+    A registered script names the payload file it reads, and the runtime refuses
+    a replication whose script does not read the heldout world's bytes. Both
+    rules are right, and together they mean two worlds can only host the same
+    experiment when they share a payload filename. Six of the catalog's seven
+    schema families do; `numeric_table` does not, so a run bound to iris with
+    letters as its heldout was asked for a replication no script could perform,
+    and `replication` could never leave `missing`.
+    """
+    if getattr(primary, "id", None) == getattr(heldout, "id", None):
+        return "same_world"
+    if getattr(primary, "digest", None) == getattr(heldout, "digest", None):
+        return "same_bytes"
+    if getattr(primary, "schema", None) != getattr(heldout, "schema", None):
+        return "different_scientific_object_schema"
+    shared = payload_names(primary) & payload_names(heldout)
+    if not shared:
+        return ("no_shared_payload_filename: a registered script names the file it "
+                "reads, so it cannot read this world")
+    return ""
+
+
 def bind_fixture(workspace: Path, world: Any, world_id: str = "") -> WorldFixture:
     """Resolve a catalog id or fixture object, verify it, then freeze a local copy."""
     from ..freeze import default_catalog
