@@ -317,7 +317,7 @@ class LegacyResearchWorkers:
                 relevance = relevance_report(root, [
                     {"cite_id": p.cite_id, "title": p.title, "abstract": p.abstract,
                      "problem": p.problem, "research_question": p.research_question}
-                    for p in papers])
+                    for p in papers], client=self.client)
                 usable = set(relevance["usable"])
                 anchoring = [p for p in papers if p.cite_id in usable] or []
                 anchor = {"problem": topic, "research_question": str(question.get("text") or topic),
